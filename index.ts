@@ -1526,7 +1526,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
 const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 
-type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook" | "routing" | "access";
+type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook" | "routing" | "access" | "admin-remove";
 
 type VoceChatParsedCommand = {
   panelId: string | null;
@@ -1618,11 +1618,31 @@ async function handleVoceChatTelegramPanel(
       };
     }
 
-    const response = renderVoceChatPanel(cfg, parsed.action, parsed.arg, parsed.panelId);
+    let effectiveCfg = cfg;
+    let effectiveAction = parsed.action;
+    let notice = "";
+
+    if (parsed.action === "admin-remove") {
+      const senderId = normalizeIdentity(parsed.arg);
+      if (senderId) {
+        await updateVoceChatHostConfig((channelConfig) => {
+          const managementSection = ensureMutableRecord(channelConfig, "management");
+          const current = parseAllowEntries(managementSection.adminSenderIds).map(normalizeIdentity).filter(Boolean);
+          managementSection.adminSenderIds = current.filter((entry) => entry !== senderId);
+          return `已移除管理员：${senderId}`;
+        });
+        effectiveCfg = await loadHostConfigForEdit() as OpenClawConfig;
+        effectiveAction = "access";
+        notice = `已移除管理员：${senderId}`;
+      }
+    }
+
+    const response = renderVoceChatPanel(effectiveCfg, effectiveAction, parsed.arg, parsed.panelId);
+    const responseText = notice ? `${notice}\n\n${response.text}` : response.text;
     await delivery.editMessage(
       { chatId: panel.chatId, threadId: panel.threadId },
       panel.messageId,
-      { text: response.text, replyMarkup: { inline_keyboard: response.buttons } },
+      { text: responseText, replyMarkup: { inline_keyboard: response.buttons } },
     );
     store.update(parsed.panelId, (current) => current);
     return { text: SILENT_REPLY_TOKEN };
@@ -1664,6 +1684,7 @@ function renderVoceChatPanel(
     case "routing":
       return renderVoceChatRoutingPanel(cfg, panelId);
     case "access":
+    case "admin-remove":
       return renderVoceChatAccessPanel(cfg, panelId);
     case "home":
     default:
@@ -1853,7 +1874,7 @@ function renderVoceChatAccessPanel(cfg: OpenClawConfig, panelId: string): VoceCh
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatAccessButtons(panelId),
+    buttons: buildVoceChatAccessButtons(panelId, management.adminSenderIds),
   };
 }
 
@@ -1885,7 +1906,12 @@ function buildVoceChatRoutingButtons(panelId: string): TelegramInlineKeyboardBut
   ];
 }
 
-function buildVoceChatAccessButtons(panelId: string): TelegramInlineKeyboardButton[][] {
+function buildVoceChatAccessButtons(panelId: string, adminSenderIds: string[]): TelegramInlineKeyboardButton[][] {
+  const adminRows = adminSenderIds.map((senderId) => [{
+    text: `删除 ${senderId}`,
+    callback_data: buildVoceChatPanelCallback(panelId, "z", senderId),
+  }]);
+
   return [
     [
       buildVoceChatCopyButton("复制查看管理员", `/${VOCECHAT_CONTROL_COMMAND} admin list`),
@@ -1896,6 +1922,7 @@ function buildVoceChatAccessButtons(panelId: string): TelegramInlineKeyboardButt
     [
       buildVoceChatCopyButton("复制移除管理员", `/${VOCECHAT_CONTROL_COMMAND} admin remove telegram:123456789`),
     ],
+    ...adminRows,
     ...buildVoceChatMainButtons(panelId),
   ];
 }
@@ -1928,7 +1955,7 @@ function buildVoceChatAccountButtons(panelId: string, accounts: ResolvedAccount[
   return rows;
 }
 
-function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w" | "r" | "x", arg?: string): string {
+function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w" | "r" | "x" | "z", arg?: string): string {
   return arg
     ? `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action} ${arg}`
     : `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action}`;
@@ -1971,6 +1998,9 @@ function decodeVoceChatPanelAction(raw: string | undefined): VoceChatPanelAction
     case "access":
     case "auth":
       return "access";
+    case "z":
+    case "admin-remove":
+      return "admin-remove";
     case "h":
     case "home":
     case "menu":
