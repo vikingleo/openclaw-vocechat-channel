@@ -1903,6 +1903,7 @@ function buildVoceChatAccessButtons(panelId: string): TelegramInlineKeyboardButt
 function buildVoceChatCopyButton(text: string, command: string): TelegramInlineKeyboardButton {
   return {
     text,
+    style: "primary",
     copy_text: { text: command },
   };
 }

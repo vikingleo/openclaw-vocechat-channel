@@ -9,8 +9,11 @@ export interface TelegramCopyTextButton {
   text: string;
 }
 
+export type TelegramButtonStyle = "primary" | "success" | "danger";
+
 export interface TelegramInlineKeyboardButton {
   text: string;
+  style?: TelegramButtonStyle;
   callback_data?: string;
   copy_text?: TelegramCopyTextButton;
 }
