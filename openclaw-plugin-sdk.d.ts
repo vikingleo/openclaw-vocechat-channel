@@ -7,6 +7,7 @@ declare module "openclaw/plugin-sdk" {
   export const readJsonBodyWithLimit: any;
   export const registerPluginHttpRoute: any;
   export const resolveOutboundMediaUrls: any;
+  export const writeJsonFileAtomically: any;
 
   export type ChannelOutboundContext = any;
   export type ChannelPlugin<T = any> = any;
