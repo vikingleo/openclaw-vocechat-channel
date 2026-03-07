@@ -1,0 +1,106 @@
+{
+  "id": "vocechat",
+  "name": "VoceChat Channel",
+  "description": "VoceChat 入站/出站消息通道插件。",
+  "channels": ["vocechat"],
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "name": { "type": "string" },
+      "baseUrl": { "type": "string" },
+      "apiKey": { "type": "string" },
+      "privatePathTemplate": { "type": "string" },
+      "groupPathTemplate": { "type": "string" },
+      "ackReaction": { "type": "string" },
+      "defaultTo": { "type": "string" },
+      "timeoutMs": { "type": "number", "minimum": 1000, "maximum": 120000 },
+      "inboundEnabled": { "type": "boolean" },
+      "inboundAckEnabled": { "type": "boolean" },
+      "inboundAckText": { "type": "string" },
+      "inboundParseMode": { "type": "string", "enum": ["legacy", "balanced", "strict"] },
+      "inboundBlockedTypes": {
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "type": "string" } }
+        ]
+      },
+      "inboundMinTextLength": { "type": "number", "minimum": 1, "maximum": 200 },
+      "inboundMaxTextLength": { "type": "number", "minimum": 50, "maximum": 20000 },
+      "inboundAllowTypelessText": { "type": "boolean" },
+      "inboundParseDebug": { "type": "boolean" },
+      "webhookPath": { "type": "string" },
+      "webhookApiKey": { "type": "string" },
+      "allowFrom": {
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } }
+        ]
+      },
+      "groupAllowFrom": {
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } }
+        ]
+      },
+      "accounts": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": { "type": "string" },
+            "baseUrl": { "type": "string" },
+            "apiKey": { "type": "string" },
+            "privatePathTemplate": { "type": "string" },
+            "groupPathTemplate": { "type": "string" },
+            "ackReaction": { "type": "string" },
+            "defaultTo": { "type": "string" },
+            "timeoutMs": { "type": "number", "minimum": 1000, "maximum": 120000 },
+            "inboundEnabled": { "type": "boolean" },
+            "inboundAckEnabled": { "type": "boolean" },
+            "inboundAckText": { "type": "string" },
+            "inboundParseMode": { "type": "string", "enum": ["legacy", "balanced", "strict"] },
+            "inboundBlockedTypes": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            },
+            "inboundMinTextLength": { "type": "number", "minimum": 1, "maximum": 200 },
+            "inboundMaxTextLength": { "type": "number", "minimum": 50, "maximum": 20000 },
+            "inboundAllowTypelessText": { "type": "boolean" },
+            "inboundParseDebug": { "type": "boolean" },
+            "webhookPath": { "type": "string" },
+            "webhookApiKey": { "type": "string" },
+            "allowFrom": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } }
+              ]
+            },
+            "groupAllowFrom": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "VoceChat API Key",
+      "sensitive": true
+    },
+    "webhookApiKey": {
+      "label": "Webhook API Key",
+      "sensitive": true
+    }
+  }
+}

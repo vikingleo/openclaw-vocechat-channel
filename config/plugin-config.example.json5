@@ -1,0 +1,21 @@
+{
+  channels: {
+    vocechat: {
+      enabled: true,
+      baseUrl: "https://your-vocechat.example",
+      apiKey: "<VOCECHAT_API_KEY>",
+      privatePathTemplate: "/api/bot/send_to_user/{id}",
+      groupPathTemplate: "/api/bot/send_to_group/{id}",
+      defaultTo: "user:demo",
+      timeoutMs: 15000,
+      inboundEnabled: true,
+      inboundAckEnabled: true,
+      inboundAckText: "已收到，正在处理中...",
+      inboundParseMode: "balanced",
+      webhookPath: "/vocechat/webhook",
+      webhookApiKey: "<WEBHOOK_API_KEY>",
+      allowFrom: ["10001"],
+      groupAllowFrom: ["10001"]
+    }
+  }
+}

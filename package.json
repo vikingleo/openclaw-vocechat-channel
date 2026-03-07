@@ -1,0 +1,24 @@
+{
+  "name": "vocechat",
+  "version": "0.1.0",
+  "description": "Portable OpenClaw VoceChat channel plugin",
+  "type": "module",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "vocechat",
+    "channel"
+  ],
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "README.md",
+    "CHANGELOG.md",
+    "config/**/*"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
