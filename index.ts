@@ -68,9 +68,15 @@ type VoceChatChannelConfig = VoceChatAccountConfig & {
   accounts?: Record<string, VoceChatAccountConfig>;
 };
 
+type VoceChatQuickTargets = {
+  users: string[];
+  groups: string[];
+};
+
 type VoceChatManagementConfig = {
   adminSenderIds: string[];
   panelStateFile: string;
+  quickTargets: VoceChatQuickTargets;
 };
 
 type ResolvedAccount = {
@@ -387,10 +393,63 @@ function resolveVoceChatManagement(cfg: OpenClawConfig): VoceChatManagementConfi
   const section = getChannelConfig(cfg);
   const management = asRecord((section as Record<string, unknown>).management);
   const panelStateFile = normalizeString(management.panelStateFile) || path.join(os.homedir(), ".local", "state", "openclaw-vocechat-channel", "panels.json");
+  const adminSenderIds = parseAllowEntries(management.adminSenderIds);
   return {
-    adminSenderIds: parseAllowEntries(management.adminSenderIds),
+    adminSenderIds,
     panelStateFile,
+    quickTargets: resolveVoceChatQuickTargets(cfg, management, adminSenderIds),
   };
+}
+
+function resolveVoceChatQuickTargets(
+  cfg: OpenClawConfig,
+  managementSection: Record<string, unknown>,
+  adminSenderIds: string[],
+): VoceChatQuickTargets {
+  const quickTargets = asRecord(managementSection.quickTargets);
+  const configuredUsers = normalizeVoceChatTargetEntries(parseAllowEntries(quickTargets.users), "user");
+  const configuredGroups = normalizeVoceChatTargetEntries(parseAllowEntries(quickTargets.groups), "group");
+  if (configuredUsers.length > 0 || configuredGroups.length > 0) {
+    return { users: configuredUsers, groups: configuredGroups };
+  }
+
+  const inferredUsers = new Set<string>();
+  const inferredGroups = new Set<string>();
+
+  const addTarget = (raw: string | undefined) => {
+    const parsed = parseTarget(raw ?? "");
+    if (!parsed) return;
+    const normalized = `${parsed.kind}:${parsed.id}`;
+    if (parsed.kind === "user") inferredUsers.add(normalized);
+    if (parsed.kind === "group") inferredGroups.add(normalized);
+  };
+
+  const defaultAccount = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID);
+  addTarget(defaultAccount.defaultTo);
+
+  for (const accountId of listVoceChatAccountIds(cfg)) {
+    addTarget(resolveVoceChatAccount(cfg, accountId).defaultTo);
+  }
+
+  for (const senderId of adminSenderIds) {
+    const match = senderId.match(/^vocechat:user:(.+)$/i);
+    if (match?.[1]) inferredUsers.add(`user:${match[1]}`);
+  }
+
+  return {
+    users: [...inferredUsers],
+    groups: [...inferredGroups],
+  };
+}
+
+function normalizeVoceChatTargetEntries(entries: string[], kind: TargetKind): string[] {
+  const normalized = new Set<string>();
+  for (const entry of entries) {
+    const parsed = parseTarget(entry);
+    if (!parsed || parsed.kind !== kind) continue;
+    normalized.add(`${parsed.kind}:${parsed.id}`);
+  }
+  return [...normalized];
 }
 
 function resolveHostConfigFilePath(): string {
@@ -1783,7 +1842,7 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatAccountDetailButtons(panelId, account),
+    buttons: buildVoceChatAccountDetailButtons(panelId, account, cfg),
   };
 }
 
@@ -1922,9 +1981,9 @@ function buildVoceChatMainButtons(panelId: string): TelegramInlineKeyboardButton
 
 function buildVoceChatRoutingButtons(cfg: OpenClawConfig, panelId: string): TelegramInlineKeyboardButton[][] {
   const currentTarget = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID).defaultTo ?? "";
+  const management = resolveVoceChatManagement(cfg);
   return [
-    buildVoceChatQuickTargetRow(panelId, DEFAULT_ACCOUNT_ID, ["user:1", "user:2"], currentTarget, "routing"),
-    buildVoceChatQuickTargetRow(panelId, DEFAULT_ACCOUNT_ID, ["group:1", "group:2"], currentTarget, "routing"),
+    ...buildVoceChatQuickTargetRows(panelId, DEFAULT_ACCOUNT_ID, management.quickTargets, currentTarget, "routing"),
     [
       buildVoceChatCopyButton("复制默认目标", `/${VOCECHAT_CONTROL_COMMAND} set default-to user:2`),
     ],
@@ -1935,11 +1994,11 @@ function buildVoceChatRoutingButtons(cfg: OpenClawConfig, panelId: string): Tele
   ];
 }
 
-function buildVoceChatAccountDetailButtons(panelId: string, account: ResolvedAccount): TelegramInlineKeyboardButton[][] {
+function buildVoceChatAccountDetailButtons(panelId: string, account: ResolvedAccount, cfg: OpenClawConfig): TelegramInlineKeyboardButton[][] {
   const currentTarget = account.defaultTo ?? "";
+  const management = resolveVoceChatManagement(cfg);
   return [
-    buildVoceChatQuickTargetRow(panelId, account.accountId, ["user:1", "user:2"], currentTarget, "account-detail", account.accountId),
-    buildVoceChatQuickTargetRow(panelId, account.accountId, ["group:1", "group:2"], currentTarget, "account-detail", account.accountId),
+    ...buildVoceChatQuickTargetRows(panelId, account.accountId, management.quickTargets, currentTarget, "account-detail", account.accountId),
     [
       buildVoceChatCopyButton("复制改目标命令", `/${VOCECHAT_CONTROL_COMMAND} set default-to ${account.accountId} user:2`),
     ],
@@ -1976,6 +2035,24 @@ function buildVoceChatAccessButtons(panelId: string, adminSenderIds: string[]): 
     ...adminRows,
     ...buildVoceChatMainButtons(panelId),
   ];
+}
+
+function buildVoceChatQuickTargetRows(
+  panelId: string,
+  accountId: string,
+  quickTargets: VoceChatQuickTargets,
+  currentTarget: string,
+  returnAction: "routing" | "account-detail",
+  returnArg = "",
+): TelegramInlineKeyboardButton[][] {
+  const rows: TelegramInlineKeyboardButton[][] = [];
+  if (quickTargets.users.length > 0) {
+    rows.push(buildVoceChatQuickTargetRow(panelId, accountId, quickTargets.users, currentTarget, returnAction, returnArg));
+  }
+  if (quickTargets.groups.length > 0) {
+    rows.push(buildVoceChatQuickTargetRow(panelId, accountId, quickTargets.groups, currentTarget, returnAction, returnArg));
+  }
+  return rows;
 }
 
 function buildVoceChatQuickTargetRow(

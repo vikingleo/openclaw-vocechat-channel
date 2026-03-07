@@ -18,7 +18,11 @@
       groupAllowFrom: ["10001"],
       management: {
         adminSenderIds: ["telegram:123456789", "vocechat:user:1"],
-        panelStateFile: "./state/vocechat-panels.json"
+        panelStateFile: "./state/vocechat-panels.json",
+        quickTargets: {
+          users: ["user:2", "user:5"],
+          groups: ["group:1001", "group:1002"]
+        }
       }
     }
   }

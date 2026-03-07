@@ -5,7 +5,7 @@
   "channels": [
     "vocechat"
   ],
-  "version": "0.4.7",
+  "version": "0.4.8",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -273,6 +273,24 @@
           },
           "panelStateFile": {
             "type": "string"
+          },
+          "quickTargets": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "users": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }
@@ -293,6 +311,14 @@
     },
     "management.panelStateFile": {
       "label": "面板状态文件",
+      "advanced": true
+    },
+    "management.quickTargets.users": {
+      "label": "快捷用户目标",
+      "advanced": true
+    },
+    "management.quickTargets.groups": {
+      "label": "快捷群目标",
       "advanced": true
     }
   }
