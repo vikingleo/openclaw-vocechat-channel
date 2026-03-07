@@ -1783,22 +1783,7 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
 
   return {
     text: lines.join("\n"),
-    buttons: [
-      [
-        buildVoceChatCopyButton("复制改目标命令", `/${VOCECHAT_CONTROL_COMMAND} set default-to ${account.accountId} user:2`),
-      ],
-      [
-        { text: "返回概览", callback_data: buildVoceChatPanelCallback(panelId, "h") },
-        { text: "账号列表", callback_data: buildVoceChatPanelCallback(panelId, "l") },
-      ],
-      [
-        { text: "Webhook", callback_data: buildVoceChatPanelCallback(panelId, "w") },
-        { text: "权限", callback_data: buildVoceChatPanelCallback(panelId, "x") },
-      ],
-      [
-        { text: "路由", callback_data: buildVoceChatPanelCallback(panelId, "r") },
-      ],
-    ],
+    buttons: buildVoceChatAccountDetailButtons(panelId, account),
   };
 }
 
@@ -1938,10 +1923,8 @@ function buildVoceChatMainButtons(panelId: string): TelegramInlineKeyboardButton
 function buildVoceChatRoutingButtons(cfg: OpenClawConfig, panelId: string): TelegramInlineKeyboardButton[][] {
   const currentTarget = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID).defaultTo ?? "";
   return [
-    [
-      buildVoceChatQuickTargetButton(panelId, DEFAULT_ACCOUNT_ID, "user:1", currentTarget, "routing"),
-      buildVoceChatQuickTargetButton(panelId, DEFAULT_ACCOUNT_ID, "user:2", currentTarget, "routing"),
-    ],
+    buildVoceChatQuickTargetRow(panelId, DEFAULT_ACCOUNT_ID, ["user:1", "user:2"], currentTarget, "routing"),
+    buildVoceChatQuickTargetRow(panelId, DEFAULT_ACCOUNT_ID, ["group:1", "group:2"], currentTarget, "routing"),
     [
       buildVoceChatCopyButton("复制默认目标", `/${VOCECHAT_CONTROL_COMMAND} set default-to user:2`),
     ],
@@ -1949,6 +1932,28 @@ function buildVoceChatRoutingButtons(cfg: OpenClawConfig, panelId: string): Tele
       buildVoceChatCopyButton("复制指定账号目标", `/${VOCECHAT_CONTROL_COMMAND} set default-to default user:2`),
     ],
     ...buildVoceChatMainButtons(panelId),
+  ];
+}
+
+function buildVoceChatAccountDetailButtons(panelId: string, account: ResolvedAccount): TelegramInlineKeyboardButton[][] {
+  const currentTarget = account.defaultTo ?? "";
+  return [
+    buildVoceChatQuickTargetRow(panelId, account.accountId, ["user:1", "user:2"], currentTarget, "account-detail", account.accountId),
+    buildVoceChatQuickTargetRow(panelId, account.accountId, ["group:1", "group:2"], currentTarget, "account-detail", account.accountId),
+    [
+      buildVoceChatCopyButton("复制改目标命令", `/${VOCECHAT_CONTROL_COMMAND} set default-to ${account.accountId} user:2`),
+    ],
+    [
+      { text: "返回概览", callback_data: buildVoceChatPanelCallback(panelId, "h") },
+      { text: "账号列表", callback_data: buildVoceChatPanelCallback(panelId, "l") },
+    ],
+    [
+      { text: "Webhook", callback_data: buildVoceChatPanelCallback(panelId, "w") },
+      { text: "权限", callback_data: buildVoceChatPanelCallback(panelId, "x") },
+    ],
+    [
+      { text: "路由", callback_data: buildVoceChatPanelCallback(panelId, "r") },
+    ],
   ];
 }
 
@@ -1973,25 +1978,40 @@ function buildVoceChatAccessButtons(panelId: string, adminSenderIds: string[]): 
   ];
 }
 
+function buildVoceChatQuickTargetRow(
+  panelId: string,
+  accountId: string,
+  targets: string[],
+  currentTarget: string,
+  returnAction: "routing" | "account-detail",
+  returnArg = "",
+): TelegramInlineKeyboardButton[] {
+  return targets.map((targetRaw) =>
+    buildVoceChatQuickTargetButton(panelId, accountId, targetRaw, currentTarget, returnAction, returnArg),
+  );
+}
+
 function buildVoceChatQuickTargetButton(
   panelId: string,
   accountId: string,
   targetRaw: string,
   currentTarget: string,
-  returnAction: "routing",
+  returnAction: "routing" | "account-detail",
+  returnArg = "",
 ): TelegramInlineKeyboardButton {
+  const isCurrent = currentTarget === targetRaw;
   return {
-    text: `${currentTarget === targetRaw ? "✅" : "设为 "}${targetRaw}`,
-    style: "success",
+    text: `${isCurrent ? "✅ " : "设为 "}${targetRaw}`,
+    style: isCurrent ? "primary" : "success",
     callback_data: buildVoceChatPanelCallback(
       panelId,
       "t",
-      buildVoceChatTargetMutationArg(accountId, targetRaw, returnAction),
+      buildVoceChatTargetMutationArg(accountId, targetRaw, returnAction, returnArg),
     ),
   };
 }
 
-function buildVoceChatTargetMutationArg(accountId: string, targetRaw: string, returnAction: "routing", returnArg = ""): string {
+function buildVoceChatTargetMutationArg(accountId: string, targetRaw: string, returnAction: "routing" | "account-detail", returnArg = ""): string {
   return [accountId, targetRaw, returnAction, returnArg].join("|");
 }
 
