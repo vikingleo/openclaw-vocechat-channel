@@ -5,9 +5,14 @@ export interface TelegramPanelTarget {
   threadId: number | null;
 }
 
+export interface TelegramCopyTextButton {
+  text: string;
+}
+
 export interface TelegramInlineKeyboardButton {
   text: string;
-  callback_data: string;
+  callback_data?: string;
+  copy_text?: TelegramCopyTextButton;
 }
 
 export type TelegramReplyMarkup = {

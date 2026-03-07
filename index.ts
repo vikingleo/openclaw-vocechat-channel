@@ -1697,7 +1697,7 @@ function renderVoceChatOverviewPanel(cfg: OpenClawConfig, panelId: string): Voce
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatMainButtons(panelId),
+    buttons: buildVoceChatRoutingButtons(panelId),
   };
 }
 
@@ -1753,6 +1753,9 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
     text: lines.join("\n"),
     buttons: [
       [
+        buildVoceChatCopyButton("复制改目标命令", `/${VOCECHAT_CONTROL_COMMAND} set default-to ${account.accountId} user:2`),
+      ],
+      [
         { text: "返回概览", callback_data: buildVoceChatPanelCallback(panelId, "h") },
         { text: "账号列表", callback_data: buildVoceChatPanelCallback(panelId, "l") },
       ],
@@ -1793,7 +1796,7 @@ function renderVoceChatWebhookPanel(cfg: OpenClawConfig, panelId: string): VoceC
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatMainButtons(panelId),
+    buttons: buildVoceChatAccessButtons(panelId),
   };
 }
 
@@ -1811,6 +1814,7 @@ function renderVoceChatRoutingPanel(cfg: OpenClawConfig, panelId: string): VoceC
     `目标格式：user:<ID> / group:<ID>`,
     `回复能力：支持按消息回复`,
     "",
+    "下方按钮可直接复制命令模板。",
     `修改默认目标：/${VOCECHAT_CONTROL_COMMAND} set default-to user:2`,
     `指定账号目标：/${VOCECHAT_CONTROL_COMMAND} set default-to <账号ID> user:2`,
   ];
@@ -1841,6 +1845,7 @@ function renderVoceChatAccessPanel(cfg: OpenClawConfig, panelId: string): VoceCh
     `默认账号私聊白名单：${formatVoceChatCountPreview(defaultAccount.allowFrom)}`,
     `默认账号群聊白名单：${formatVoceChatCountPreview(defaultAccount.groupAllowFrom)}`,
     "",
+    "下方按钮可直接复制命令模板。",
     `查看管理员：/${VOCECHAT_CONTROL_COMMAND} admin list`,
     `添加管理员：/${VOCECHAT_CONTROL_COMMAND} admin add telegram:123456789`,
     `移除管理员：/${VOCECHAT_CONTROL_COMMAND} admin remove telegram:123456789`,
@@ -1866,6 +1871,40 @@ function buildVoceChatMainButtons(panelId: string): TelegramInlineKeyboardButton
       { text: "权限", callback_data: buildVoceChatPanelCallback(panelId, "x") },
     ],
   ];
+}
+
+function buildVoceChatRoutingButtons(panelId: string): TelegramInlineKeyboardButton[][] {
+  return [
+    [
+      buildVoceChatCopyButton("复制默认目标", `/${VOCECHAT_CONTROL_COMMAND} set default-to user:2`),
+    ],
+    [
+      buildVoceChatCopyButton("复制指定账号目标", `/${VOCECHAT_CONTROL_COMMAND} set default-to default user:2`),
+    ],
+    ...buildVoceChatMainButtons(panelId),
+  ];
+}
+
+function buildVoceChatAccessButtons(panelId: string): TelegramInlineKeyboardButton[][] {
+  return [
+    [
+      buildVoceChatCopyButton("复制查看管理员", `/${VOCECHAT_CONTROL_COMMAND} admin list`),
+    ],
+    [
+      buildVoceChatCopyButton("复制添加管理员", `/${VOCECHAT_CONTROL_COMMAND} admin add telegram:123456789`),
+    ],
+    [
+      buildVoceChatCopyButton("复制移除管理员", `/${VOCECHAT_CONTROL_COMMAND} admin remove telegram:123456789`),
+    ],
+    ...buildVoceChatMainButtons(panelId),
+  ];
+}
+
+function buildVoceChatCopyButton(text: string, command: string): TelegramInlineKeyboardButton {
+  return {
+    text,
+    copy_text: { text: command },
+  };
 }
 
 function buildVoceChatAccountButtons(panelId: string, accounts: ResolvedAccount[]): TelegramInlineKeyboardButton[][] {
