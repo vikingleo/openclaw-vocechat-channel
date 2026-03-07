@@ -1526,7 +1526,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
 const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 
-type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook" | "routing" | "access" | "admin-remove";
+type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook" | "routing" | "access" | "admin-remove-confirm" | "admin-remove" | "set-default-target";
 
 type VoceChatParsedCommand = {
   panelId: string | null;
@@ -1620,24 +1620,30 @@ async function handleVoceChatTelegramPanel(
 
     let effectiveCfg = cfg;
     let effectiveAction = parsed.action;
+    let effectiveArg = parsed.arg;
     let notice = "";
 
     if (parsed.action === "admin-remove") {
       const senderId = normalizeIdentity(parsed.arg);
       if (senderId) {
-        await updateVoceChatHostConfig((channelConfig) => {
-          const managementSection = ensureMutableRecord(channelConfig, "management");
-          const current = parseAllowEntries(managementSection.adminSenderIds).map(normalizeIdentity).filter(Boolean);
-          managementSection.adminSenderIds = current.filter((entry) => entry !== senderId);
-          return `已移除管理员：${senderId}`;
-        });
+        const summary = await updateVoceChatAdminRemoval(senderId);
         effectiveCfg = await loadHostConfigForEdit() as OpenClawConfig;
         effectiveAction = "access";
-        notice = `已移除管理员：${senderId}`;
+        effectiveArg = "";
+        notice = summary;
+      }
+    } else if (parsed.action === "set-default-target") {
+      const mutation = parseVoceChatTargetMutationArg(parsed.arg);
+      if (mutation) {
+        const summary = await updateVoceChatDefaultTarget(mutation.accountId, mutation.targetRaw);
+        effectiveCfg = await loadHostConfigForEdit() as OpenClawConfig;
+        effectiveAction = mutation.returnAction;
+        effectiveArg = mutation.returnArg ?? "";
+        notice = summary;
       }
     }
 
-    const response = renderVoceChatPanel(effectiveCfg, effectiveAction, parsed.arg, parsed.panelId);
+    const response = renderVoceChatPanel(effectiveCfg, effectiveAction, effectiveArg, parsed.panelId);
     const responseText = notice ? `${notice}\n\n${response.text}` : response.text;
     await delivery.editMessage(
       { chatId: panel.chatId, threadId: panel.threadId },
@@ -1684,8 +1690,13 @@ function renderVoceChatPanel(
     case "routing":
       return renderVoceChatRoutingPanel(cfg, panelId);
     case "access":
+      return renderVoceChatAccessPanel(cfg, panelId);
+    case "admin-remove-confirm":
+      return renderVoceChatAdminRemoveConfirmPanel(cfg, panelId, arg);
     case "admin-remove":
       return renderVoceChatAccessPanel(cfg, panelId);
+    case "set-default-target":
+      return renderVoceChatRoutingPanel(cfg, panelId);
     case "home":
     default:
       return renderVoceChatOverviewPanel(cfg, panelId);
@@ -1842,7 +1853,37 @@ function renderVoceChatRoutingPanel(cfg: OpenClawConfig, panelId: string): VoceC
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatRoutingButtons(panelId),
+    buttons: buildVoceChatRoutingButtons(cfg, panelId),
+  };
+}
+
+
+function renderVoceChatAdminRemoveConfirmPanel(cfg: OpenClawConfig, panelId: string, senderIdRaw: string): VoceChatPanelResponse {
+  const senderId = normalizeIdentity(senderIdRaw);
+  const management = resolveVoceChatManagement(cfg);
+  const exists = management.adminSenderIds.map(normalizeIdentity).includes(senderId);
+  const lines = [
+    "确认删除管理员",
+    "",
+    `管理员：${senderId || "<空>"}`,
+    `当前存在：${exists ? "是" : "否"}`,
+    "",
+    exists ? "请确认是否删除该管理员。" : "该管理员已不存在，可返回权限面板刷新查看。",
+  ];
+
+  const buttons: TelegramInlineKeyboardButton[][] = [];
+  if (exists) {
+    buttons.push([
+      { text: "确认删除", style: "danger", callback_data: buildVoceChatPanelCallback(panelId, "z", senderId) },
+    ]);
+  }
+  buttons.push([
+    { text: "取消返回", callback_data: buildVoceChatPanelCallback(panelId, "x") },
+  ]);
+
+  return {
+    text: lines.join("\n"),
+    buttons,
   };
 }
 
@@ -1894,8 +1935,13 @@ function buildVoceChatMainButtons(panelId: string): TelegramInlineKeyboardButton
   ];
 }
 
-function buildVoceChatRoutingButtons(panelId: string): TelegramInlineKeyboardButton[][] {
+function buildVoceChatRoutingButtons(cfg: OpenClawConfig, panelId: string): TelegramInlineKeyboardButton[][] {
+  const currentTarget = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID).defaultTo ?? "";
   return [
+    [
+      buildVoceChatQuickTargetButton(panelId, DEFAULT_ACCOUNT_ID, "user:1", currentTarget, "routing"),
+      buildVoceChatQuickTargetButton(panelId, DEFAULT_ACCOUNT_ID, "user:2", currentTarget, "routing"),
+    ],
     [
       buildVoceChatCopyButton("复制默认目标", `/${VOCECHAT_CONTROL_COMMAND} set default-to user:2`),
     ],
@@ -1909,7 +1955,7 @@ function buildVoceChatRoutingButtons(panelId: string): TelegramInlineKeyboardBut
 function buildVoceChatAccessButtons(panelId: string, adminSenderIds: string[]): TelegramInlineKeyboardButton[][] {
   const adminRows = adminSenderIds.map((senderId) => [{
     text: `删除 ${senderId}`,
-    callback_data: buildVoceChatPanelCallback(panelId, "z", senderId),
+    callback_data: buildVoceChatPanelCallback(panelId, "y", senderId),
   }]);
 
   return [
@@ -1925,6 +1971,40 @@ function buildVoceChatAccessButtons(panelId: string, adminSenderIds: string[]): 
     ...adminRows,
     ...buildVoceChatMainButtons(panelId),
   ];
+}
+
+function buildVoceChatQuickTargetButton(
+  panelId: string,
+  accountId: string,
+  targetRaw: string,
+  currentTarget: string,
+  returnAction: "routing",
+): TelegramInlineKeyboardButton {
+  return {
+    text: `${currentTarget === targetRaw ? "✅" : "设为 "}${targetRaw}`,
+    style: "success",
+    callback_data: buildVoceChatPanelCallback(
+      panelId,
+      "t",
+      buildVoceChatTargetMutationArg(accountId, targetRaw, returnAction),
+    ),
+  };
+}
+
+function buildVoceChatTargetMutationArg(accountId: string, targetRaw: string, returnAction: "routing", returnArg = ""): string {
+  return [accountId, targetRaw, returnAction, returnArg].join("|");
+}
+
+function parseVoceChatTargetMutationArg(raw: string): { accountId: string; targetRaw: string; returnAction: VoceChatPanelAction; returnArg: string } | null {
+  const [accountIdRaw = DEFAULT_ACCOUNT_ID, targetRaw = "", returnActionRaw = "routing", returnArg = ""] = raw.split("|");
+  if (!parseTarget(targetRaw)) return null;
+  const returnAction = decodeVoceChatPanelAction(returnActionRaw);
+  return {
+    accountId: normalizeAccountId(accountIdRaw || DEFAULT_ACCOUNT_ID),
+    targetRaw,
+    returnAction,
+    returnArg,
+  };
 }
 
 function buildVoceChatCopyButton(text: string, command: string): TelegramInlineKeyboardButton {
@@ -1955,7 +2035,7 @@ function buildVoceChatAccountButtons(panelId: string, accounts: ResolvedAccount[
   return rows;
 }
 
-function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w" | "r" | "x" | "z", arg?: string): string {
+function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w" | "r" | "x" | "y" | "z" | "t", arg?: string): string {
   return arg
     ? `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action} ${arg}`
     : `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action}`;
@@ -1998,9 +2078,15 @@ function decodeVoceChatPanelAction(raw: string | undefined): VoceChatPanelAction
     case "access":
     case "auth":
       return "access";
+    case "y":
+    case "admin-remove-confirm":
+      return "admin-remove-confirm";
     case "z":
     case "admin-remove":
       return "admin-remove";
+    case "t":
+    case "set-default-target":
+      return "set-default-target";
     case "h":
     case "home":
     case "menu":
@@ -2118,12 +2204,7 @@ async function handleVoceChatAdminEditCommand(args: string[], cfg: OpenClawConfi
     if (!senderId) {
       return { text: `用法：/${VOCECHAT_CONTROL_COMMAND} admin remove <发送者ID>`, isError: true };
     }
-    const summary = await updateVoceChatHostConfig((channelConfig) => {
-      const managementSection = ensureMutableRecord(channelConfig, "management");
-      const current = parseAllowEntries(managementSection.adminSenderIds).map(normalizeIdentity).filter(Boolean);
-      managementSection.adminSenderIds = current.filter((entry) => entry !== senderId);
-      return `已移除管理员：${senderId}`;
-    });
+    const summary = await updateVoceChatAdminRemoval(senderId);
     return buildVoceChatMutationReply(summary);
   }
 
@@ -2166,6 +2247,37 @@ async function handleVoceChatSetCommand(args: string[], cfg: OpenClawConfig): Pr
         isError: true,
       };
   }
+}
+
+async function updateVoceChatAdminRemoval(senderId: string): Promise<string> {
+  return await updateVoceChatHostConfig((channelConfig) => {
+    const managementSection = ensureMutableRecord(channelConfig, "management");
+    const current = parseAllowEntries(managementSection.adminSenderIds).map(normalizeIdentity).filter(Boolean);
+    managementSection.adminSenderIds = current.filter((entry) => entry !== senderId);
+    return `已移除管理员：${senderId}`;
+  });
+}
+
+async function updateVoceChatDefaultTarget(accountId: string, targetRaw: string): Promise<string> {
+  return await updateVoceChatHostConfig((channelConfig) => {
+    if (accountId === DEFAULT_ACCOUNT_ID) {
+      const accounts = asRecord(channelConfig.accounts);
+      const defaultAccountSection = asRecord(accounts[DEFAULT_ACCOUNT_ID]);
+      if (Object.keys(defaultAccountSection).length > 0) {
+        const mutableAccounts = ensureMutableRecord(channelConfig, "accounts");
+        const mutableDefault = ensureMutableRecord(mutableAccounts, DEFAULT_ACCOUNT_ID);
+        mutableDefault.defaultTo = targetRaw;
+      } else {
+        channelConfig.defaultTo = targetRaw;
+      }
+      return `已更新默认账号目标：${targetRaw}`;
+    }
+
+    const accounts = ensureMutableRecord(channelConfig, "accounts");
+    const accountSection = ensureMutableRecord(accounts, accountId);
+    accountSection.defaultTo = targetRaw;
+    return `已更新账号 ${accountId} 的默认目标：${targetRaw}`;
+  });
 }
 
 async function handleVoceChatDefaultTargetCommand(args: string[], cfg: OpenClawConfig): Promise<ReplyPayload> {
@@ -2217,25 +2329,7 @@ async function handleVoceChatDefaultTargetCommand(args: string[], cfg: OpenClawC
     };
   }
 
-  const summary = await updateVoceChatHostConfig((channelConfig) => {
-    if (accountId === DEFAULT_ACCOUNT_ID) {
-      const accounts = asRecord(channelConfig.accounts);
-      const defaultAccountSection = asRecord(accounts[DEFAULT_ACCOUNT_ID]);
-      if (Object.keys(defaultAccountSection).length > 0) {
-        const mutableAccounts = ensureMutableRecord(channelConfig, "accounts");
-        const mutableDefault = ensureMutableRecord(mutableAccounts, DEFAULT_ACCOUNT_ID);
-        mutableDefault.defaultTo = targetRaw;
-      } else {
-        channelConfig.defaultTo = targetRaw;
-      }
-      return `已更新默认账号目标：${targetRaw}`;
-    }
-
-    const accounts = ensureMutableRecord(channelConfig, "accounts");
-    const accountSection = ensureMutableRecord(accounts, accountId);
-    accountSection.defaultTo = targetRaw;
-    return `已更新账号 ${accountId} 的默认目标：${targetRaw}`;
-  });
+  const summary = await updateVoceChatDefaultTarget(accountId, targetRaw);
 
   return buildVoceChatMutationReply(summary);
 }

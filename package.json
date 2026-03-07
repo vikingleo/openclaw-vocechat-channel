@@ -1,6 +1,6 @@
 {
   "name": "vocechat",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Portable OpenClaw VoceChat channel plugin",
   "type": "module",
   "keywords": [
