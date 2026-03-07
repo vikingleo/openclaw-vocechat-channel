@@ -1697,7 +1697,7 @@ function renderVoceChatOverviewPanel(cfg: OpenClawConfig, panelId: string): Voce
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatRoutingButtons(panelId),
+    buttons: buildVoceChatMainButtons(panelId),
   };
 }
 
@@ -1796,7 +1796,7 @@ function renderVoceChatWebhookPanel(cfg: OpenClawConfig, panelId: string): VoceC
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatAccessButtons(panelId),
+    buttons: buildVoceChatMainButtons(panelId),
   };
 }
 
@@ -1821,7 +1821,7 @@ function renderVoceChatRoutingPanel(cfg: OpenClawConfig, panelId: string): VoceC
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatMainButtons(panelId),
+    buttons: buildVoceChatRoutingButtons(panelId),
   };
 }
 
@@ -1838,7 +1838,7 @@ function renderVoceChatAccessPanel(cfg: OpenClawConfig, panelId: string): VoceCh
     "",
     `管理员模式：${management.adminSenderIds.length > 0 ? "插件白名单" : "继承宿主授权"}`,
     `管理员数量：${management.adminSenderIds.length}`,
-    `管理员示例：${formatVoceChatMaskedEntries(management.adminSenderIds)}`,
+    `管理员列表：${management.adminSenderIds.length > 0 ? management.adminSenderIds.join("、") : "未设置"}`,
     `群消息策略：${formatVoceChatGroupPolicy(groupPolicy)}`,
     `私聊白名单总量：${allowFromTotal}`,
     `群聊白名单总量：${groupAllowFromTotal}`,
@@ -1853,7 +1853,7 @@ function renderVoceChatAccessPanel(cfg: OpenClawConfig, panelId: string): VoceCh
 
   return {
     text: lines.join("\n"),
-    buttons: buildVoceChatMainButtons(panelId),
+    buttons: buildVoceChatAccessButtons(panelId),
   };
 }
 
