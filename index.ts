@@ -1461,7 +1461,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
 const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 
-type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook";
+type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook" | "routing" | "access";
 
 type VoceChatParsedCommand = {
   panelId: string | null;
@@ -1593,6 +1593,10 @@ function renderVoceChatPanel(
       return renderVoceChatAccountDetailPanel(cfg, panelId, arg);
     case "webhook":
       return renderVoceChatWebhookPanel(cfg, panelId);
+    case "routing":
+      return renderVoceChatRoutingPanel(cfg, panelId);
+    case "access":
+      return renderVoceChatAccessPanel(cfg, panelId);
     case "home":
     default:
       return renderVoceChatOverviewPanel(cfg, panelId);
@@ -1600,12 +1604,15 @@ function renderVoceChatPanel(
 }
 
 function renderVoceChatOverviewPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
+  const section = getChannelConfig(cfg);
+  const management = resolveVoceChatManagement(cfg);
   const accountIds = listVoceChatAccountIds(cfg);
   const accounts = accountIds.map((accountId) => resolveVoceChatAccount(cfg, accountId));
   const enabledCount = accounts.filter((account) => account.enabled).length;
   const configuredCount = accounts.filter((account) => Boolean(account.baseUrl && account.apiKey)).length;
   const inboundCount = accounts.filter((account) => account.enabled && account.inboundEnabled).length;
   const defaultAccount = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID);
+  const groupPolicy = normalizeString((section as Record<string, unknown>).groupPolicy);
 
   const lines = [
     "VoceChat 通道管理",
@@ -1616,7 +1623,8 @@ function renderVoceChatOverviewPanel(cfg: OpenClawConfig, panelId: string): Voce
     `启用入站：${inboundCount}`,
     `默认账号：${defaultAccount.accountId}`,
     `默认目标：${defaultAccount.defaultTo ?? "<未设置>"}`,
-    `默认 Webhook：${defaultAccount.webhookPath}`,
+    `群消息策略：${formatVoceChatGroupPolicy(groupPolicy)}`,
+    `管理员控制：${formatVoceChatAdminMode(management.adminSenderIds)}`,
   ];
 
   return {
@@ -1633,8 +1641,9 @@ function renderVoceChatAccountsPanel(cfg: OpenClawConfig, panelId: string): Voce
     lines.push("当前未配置任何账号。", "", "请先在配置中补充账号信息。");
   } else {
     for (const account of accounts) {
+      const defaultMark = account.accountId === DEFAULT_ACCOUNT_ID ? " [默认]" : "";
       lines.push(
-        `${account.enabled ? "✅" : "⛔"} ${account.accountId} · ${account.inboundEnabled ? "入站开" : "入站关"} · ${account.baseUrl ? "已配置" : "未配置"}`,
+        `${account.enabled ? "✅" : "⛔"} ${account.accountId}${defaultMark} · ${account.inboundEnabled ? "入站开" : "入站关"} · ${account.baseUrl ? "已配置" : "未配置"}`,
       );
     }
     lines.push("", "点击下方按钮查看账号详情。", "可用“返回概览”返回主页。");
@@ -1657,12 +1666,19 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
     `名称：${account.name ?? "<未设置>"}`,
     `基础地址：${account.baseUrl || "<未设置>"}`,
     `默认目标：${account.defaultTo ?? "<未设置>"}`,
+    `超时时间：${account.timeoutMs} ms`,
     `Webhook 路径：${account.webhookPath}`,
     `Webhook 鉴权：${account.webhookApiKey ? "已设置" : "未设置"}`,
     `入站模式：${account.inboundEnabled ? "webhook+outbound" : "outbound-only"}`,
     `确认回复：${account.inboundAckEnabled ? "开启" : "关闭"}`,
-    `私聊白名单：${account.allowFrom.length}`,
-    `群聊白名单：${account.groupAllowFrom.length}`,
+    `解析模式：${account.inboundParseMode}`,
+    `允许无类型文本：${account.inboundAllowTypelessText ? "是" : "否"}`,
+    `解析调试：${account.inboundParseDebug ? "开启" : "关闭"}`,
+    `阻断类型：${formatVoceChatCountPreview(account.inboundBlockedTypes)}`,
+    `私聊白名单：${formatVoceChatCountPreview(account.allowFrom)}`,
+    `群聊白名单：${formatVoceChatCountPreview(account.groupAllowFrom)}`,
+    `私聊路径模板：${formatVoceChatTemplateState(account.privatePathTemplate, DEFAULT_PRIVATE_PATH_TEMPLATE)}`,
+    `群聊路径模板：${formatVoceChatTemplateState(account.groupPathTemplate, DEFAULT_GROUP_PATH_TEMPLATE)}`,
   ];
 
   return {
@@ -1674,6 +1690,10 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
       ],
       [
         { text: "Webhook", callback_data: buildVoceChatPanelCallback(panelId, "w") },
+        { text: "权限", callback_data: buildVoceChatPanelCallback(panelId, "x") },
+      ],
+      [
+        { text: "路由", callback_data: buildVoceChatPanelCallback(panelId, "r") },
       ],
     ],
   };
@@ -1681,19 +1701,75 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
 
 function renderVoceChatWebhookPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
   const accountIds = listVoceChatAccountIds(cfg);
-  const lines = ["VoceChat Webhook 总览", ""];
+  const accounts = accountIds.map((accountId) => resolveVoceChatAccount(cfg, accountId));
+  const webhookEnabledCount = accounts.filter((account) => account.enabled && account.inboundEnabled).length;
+  const authEnabledCount = accounts.filter((account) => Boolean(account.webhookApiKey)).length;
+  const lines = [
+    "VoceChat Webhook 总览",
+    "",
+    `Webhook 启用账号：${webhookEnabledCount}`,
+    `鉴权开启账号：${authEnabledCount}`,
+  ];
 
-  if (accountIds.length === 0) {
-    lines.push("当前未配置任何账号。", "", "请先在配置中补充账号信息。");
+  if (accounts.length === 0) {
+    lines.push("", "当前未配置任何账号。", "请先在配置中补充账号信息。");
   } else {
-    for (const accountId of accountIds) {
-      const account = resolveVoceChatAccount(cfg, accountId);
+    lines.push("");
+    for (const account of accounts) {
       lines.push(
-        `${account.enabled && account.inboundEnabled ? "✅" : "⛔"} ${account.accountId} · ${account.webhookPath} · ${account.webhookApiKey ? "鉴权开" : "鉴权关"}`,
+        `${account.enabled && account.inboundEnabled ? "✅" : "⛔"} ${account.accountId} · ${account.webhookPath} · ${account.webhookApiKey ? "鉴权开" : "鉴权关"} · ${account.inboundAckEnabled ? "确认开" : "确认关"}`,
       );
     }
     lines.push("", `默认回退路径：${DEFAULT_WEBHOOK_PATH}`);
   }
+
+  return {
+    text: lines.join("\n"),
+    buttons: buildVoceChatMainButtons(panelId),
+  };
+}
+
+function renderVoceChatRoutingPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
+  const accounts = listVoceChatAccountIds(cfg).map((accountId) => resolveVoceChatAccount(cfg, accountId));
+  const defaultAccount = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID);
+  const lines = [
+    "VoceChat 路由摘要",
+    "",
+    `账号模式：${accounts.length > 1 ? "多账号" : "单账号"}`,
+    `默认账号：${defaultAccount.accountId}`,
+    `默认目标：${defaultAccount.defaultTo ?? "<未设置>"}`,
+    `私聊路径模板：${formatVoceChatTemplateState(defaultAccount.privatePathTemplate, DEFAULT_PRIVATE_PATH_TEMPLATE)}`,
+    `群聊路径模板：${formatVoceChatTemplateState(defaultAccount.groupPathTemplate, DEFAULT_GROUP_PATH_TEMPLATE)}`,
+    `目标格式：user:<ID> / group:<ID>`,
+    `回复能力：支持按消息回复`,
+  ];
+
+  return {
+    text: lines.join("\n"),
+    buttons: buildVoceChatMainButtons(panelId),
+  };
+}
+
+function renderVoceChatAccessPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
+  const section = getChannelConfig(cfg);
+  const management = resolveVoceChatManagement(cfg);
+  const accounts = listVoceChatAccountIds(cfg).map((accountId) => resolveVoceChatAccount(cfg, accountId));
+  const defaultAccount = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID);
+  const groupPolicy = normalizeString((section as Record<string, unknown>).groupPolicy);
+  const allowFromTotal = accounts.reduce((sum, account) => sum + account.allowFrom.length, 0);
+  const groupAllowFromTotal = accounts.reduce((sum, account) => sum + account.groupAllowFrom.length, 0);
+  const lines = [
+    "VoceChat 访问控制",
+    "",
+    `管理员模式：${management.adminSenderIds.length > 0 ? "插件白名单" : "继承宿主授权"}`,
+    `管理员数量：${management.adminSenderIds.length}`,
+    `管理员示例：${formatVoceChatMaskedEntries(management.adminSenderIds)}`,
+    `群消息策略：${formatVoceChatGroupPolicy(groupPolicy)}`,
+    `私聊白名单总量：${allowFromTotal}`,
+    `群聊白名单总量：${groupAllowFromTotal}`,
+    `默认账号私聊白名单：${formatVoceChatCountPreview(defaultAccount.allowFrom)}`,
+    `默认账号群聊白名单：${formatVoceChatCountPreview(defaultAccount.groupAllowFrom)}`,
+  ];
 
   return {
     text: lines.join("\n"),
@@ -1709,6 +1785,10 @@ function buildVoceChatMainButtons(panelId: string): TelegramInlineKeyboardButton
     ],
     [
       { text: "Webhook", callback_data: buildVoceChatPanelCallback(panelId, "w") },
+      { text: "路由", callback_data: buildVoceChatPanelCallback(panelId, "r") },
+    ],
+    [
+      { text: "权限", callback_data: buildVoceChatPanelCallback(panelId, "x") },
     ],
   ];
 }
@@ -1733,7 +1813,7 @@ function buildVoceChatAccountButtons(panelId: string, accounts: ResolvedAccount[
   return rows;
 }
 
-function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w", arg?: string): string {
+function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w" | "r" | "x", arg?: string): string {
   return arg
     ? `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action} ${arg}`
     : `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action}`;
@@ -1768,6 +1848,14 @@ function decodeVoceChatPanelAction(raw: string | undefined): VoceChatPanelAction
     case "w":
     case "webhook":
       return "webhook";
+    case "r":
+    case "routing":
+    case "route":
+      return "routing";
+    case "x":
+    case "access":
+    case "auth":
+      return "access";
     case "h":
     case "home":
     case "menu":
@@ -1775,6 +1863,56 @@ function decodeVoceChatPanelAction(raw: string | undefined): VoceChatPanelAction
     default:
       return "home";
   }
+}
+
+function formatVoceChatGroupPolicy(value: string): string {
+  switch (value.trim().toLowerCase()) {
+    case "open":
+      return "开放";
+    case "allowlist":
+      return "白名单";
+    case "denylist":
+      return "黑名单";
+    case "":
+      return "未设置";
+    default:
+      return value;
+  }
+}
+
+function formatVoceChatAdminMode(adminSenderIds: string[]): string {
+  return adminSenderIds.length > 0 ? `插件白名单（${adminSenderIds.length}）` : "继承宿主授权";
+}
+
+function formatVoceChatTemplateState(current: string, defaultTemplate: string): string {
+  return current === defaultTemplate ? "默认" : "已自定义";
+}
+
+function formatVoceChatCountPreview(entries: string[]): string {
+  if (entries.length === 0) return "0";
+  return `${entries.length}（${formatVoceChatMaskedEntries(entries)}）`;
+}
+
+function formatVoceChatMaskedEntries(entries: string[], max = 3): string {
+  if (entries.length === 0) return "未设置";
+  const preview = entries.slice(0, max).map(maskVoceChatEntry).join("、");
+  return entries.length > max ? `${preview} 等 ${entries.length} 项` : preview;
+}
+
+function maskVoceChatEntry(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "<空>";
+  const parts = trimmed.split(":");
+  if (parts.length >= 2) {
+    return `${parts[0]}:${maskVoceChatSegment(parts.slice(1).join(":"))}`;
+  }
+  return maskVoceChatSegment(trimmed);
+}
+
+function maskVoceChatSegment(value: string): string {
+  if (value.length <= 4) return `${value.slice(0, 1)}***`;
+  if (value.length <= 8) return `${value.slice(0, 2)}***${value.slice(-1)}`;
+  return `${value.slice(0, 3)}***${value.slice(-2)}`;
 }
 
 function isVoceChatAdminAuthorized(ctx: PluginCommandContext, management: VoceChatManagementConfig): boolean {

@@ -11,6 +11,7 @@
 - 私聊与群聊目标解析
 - 多账号配置
 - Telegram 卡片式管理面板
+- 多视图运维摘要（概览 / 账号 / Webhook / 路由 / 权限）
 - 非 Telegram 渠道的文本管理视图
 - 管理命令与按钮的管理员权限控制
 
@@ -40,6 +41,10 @@
   - 查看指定账号详情
 - `/vocechatctl webhook`
   - 查看 webhook 概览
+- `/vocechatctl routing`
+  - 查看默认路由、目标格式与路径模板状态
+- `/vocechatctl access`
+  - 查看管理员控制与白名单摘要
 
 在 Telegram 中，上述命令第一次会新发一张管理卡片；之后的按钮操作会原地刷新。
 
