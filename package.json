@@ -1,6 +1,6 @@
 {
   "name": "vocechat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Portable OpenClaw VoceChat channel plugin",
   "type": "module",
   "keywords": [
@@ -14,11 +14,23 @@
     "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
-    "config/**/*"
+    "config/**/*",
+    "src/**/*"
   ],
   "openclaw": {
     "extensions": [
       "./index.ts"
     ]
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2"
   }
 }

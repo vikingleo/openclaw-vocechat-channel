@@ -1,3 +1,6 @@
+import os from "node:os";
+import path from "node:path";
+
 import {
   createNormalizedOutboundDeliverer,
   createReplyPrefixOptions,
@@ -14,8 +17,13 @@ import type {
   OpenClawConfig,
   OpenClawPluginApi,
   OutboundDeliveryResult,
+  PluginCommandContext,
   PluginRuntime,
+  ReplyPayload,
 } from "openclaw/plugin-sdk";
+
+import { ControlPanelStore } from "./src/panel-store.js";
+import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 
 const CHANNEL_ID = "vocechat";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -56,6 +64,11 @@ type VoceChatAccountConfig = {
 
 type VoceChatChannelConfig = VoceChatAccountConfig & {
   accounts?: Record<string, VoceChatAccountConfig>;
+};
+
+type VoceChatManagementConfig = {
+  adminSenderIds: string[];
+  panelStateFile: string;
 };
 
 type ResolvedAccount = {
@@ -365,6 +378,16 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
     webhookApiKey: normalizeString(merged.webhookApiKey) || undefined,
     allowFrom: parseAllowEntries(merged.allowFrom),
     groupAllowFrom: parseAllowEntries(merged.groupAllowFrom),
+  };
+}
+
+function resolveVoceChatManagement(cfg: OpenClawConfig): VoceChatManagementConfig {
+  const section = getChannelConfig(cfg);
+  const management = asRecord((section as Record<string, unknown>).management);
+  const panelStateFile = normalizeString(management.panelStateFile) || path.join(os.homedir(), ".local", "state", "openclaw-vocechat-channel", "panels.json");
+  return {
+    adminSenderIds: parseAllowEntries(management.adminSenderIds),
+    panelStateFile,
   };
 }
 
@@ -1248,6 +1271,17 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
             { type: "array", items: { oneOf: [{ type: "string" }, { type: "number" }] } },
           ],
         },
+        management: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            adminSenderIds: {
+              type: "array",
+              items: { type: "string" },
+            },
+            panelStateFile: { type: "string" },
+          },
+        },
         accounts: {
           type: "object",
           additionalProperties: {
@@ -1304,6 +1338,14 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       webhookApiKey: {
         label: "Webhook API Key",
         sensitive: true,
+      },
+      "management.adminSenderIds": {
+        label: "管理员发送者 ID",
+        advanced: true,
+      },
+      "management.panelStateFile": {
+        label: "面板状态文件",
+        advanced: true,
       },
     },
   },
@@ -1416,6 +1458,356 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
   },
 };
 
+const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
+const SILENT_REPLY_TOKEN = "NO_REPLY";
+
+type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook";
+
+type VoceChatParsedCommand = {
+  panelId: string | null;
+  action: VoceChatPanelAction;
+  arg: string;
+};
+
+type VoceChatPanelResponse = {
+  text: string;
+  buttons: TelegramInlineKeyboardButton[][];
+};
+
+function registerVoceChatManagementCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: VOCECHAT_CONTROL_COMMAND,
+    description: "VoceChat 通道管理面板（管理员）",
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx) => await handleVoceChatManagementCommand(ctx, api.config as OpenClawConfig),
+  });
+}
+
+async function handleVoceChatManagementCommand(ctx: PluginCommandContext, cfg: OpenClawConfig): Promise<ReplyPayload> {
+  const management = resolveVoceChatManagement(cfg);
+  if (!isVoceChatAdminAuthorized(ctx, management)) {
+    return {
+      text: [
+        "VoceChat 通道管理",
+        "",
+        "无权限：仅管理员可执行该命令。",
+      ].join("\n"),
+      isError: true,
+    };
+  }
+
+  const parsed = parseVoceChatCommandArgs(ctx.args ?? "");
+  if (ctx.channel === "telegram") {
+    return await handleVoceChatTelegramPanel(ctx, cfg, management, parsed);
+  }
+  return await handleVoceChatGenericCommand(cfg, parsed);
+}
+
+async function handleVoceChatTelegramPanel(
+  ctx: PluginCommandContext,
+  cfg: OpenClawConfig,
+  management: VoceChatManagementConfig,
+  parsed: VoceChatParsedCommand,
+): Promise<ReplyPayload> {
+  const telegramRuntime = resolveVoceChatTelegramRuntime(cfg);
+  if (!telegramRuntime) {
+    return {
+      text: [
+        "VoceChat 通道管理",
+        "",
+        "缺少 Telegram 机器人配置，无法打开卡片面板。",
+      ].join("\n"),
+      isError: true,
+    };
+  }
+
+  const target = parseTelegramTarget(ctx.to ?? ctx.from, ctx.messageThreadId);
+  if (!target && !parsed.panelId) {
+    return {
+      text: [
+        "VoceChat 通道管理",
+        "",
+        "当前会话未解析出 Telegram 目标，无法打开卡片面板。",
+      ].join("\n"),
+      isError: true,
+    };
+  }
+
+  const store = new ControlPanelStore(management.panelStateFile);
+  const delivery = new TelegramPanelDelivery(telegramRuntime);
+
+  if (parsed.panelId) {
+    const panel = store.get(parsed.panelId);
+    if (!panel) {
+      return {
+        text: [
+          "VoceChat 通道管理",
+          "",
+          `卡片已过期，请重新发送 /${VOCECHAT_CONTROL_COMMAND} 打开。`,
+        ].join("\n"),
+        isError: true,
+      };
+    }
+
+    const response = renderVoceChatPanel(cfg, parsed.action, parsed.arg, parsed.panelId);
+    await delivery.editMessage(
+      { chatId: panel.chatId, threadId: panel.threadId },
+      panel.messageId,
+      { text: response.text, replyMarkup: { inline_keyboard: response.buttons } },
+    );
+    store.update(parsed.panelId, (current) => current);
+    return { text: SILENT_REPLY_TOKEN };
+  }
+
+  const panel = store.create({
+    chatId: target?.chatId ?? "",
+    threadId: target?.threadId ?? null,
+    ownerSenderId: normalizeIdentity(ctx.senderId ?? ctx.from),
+  });
+  const response = renderVoceChatPanel(cfg, parsed.action, parsed.arg, panel.panelId);
+  const sent = await delivery.sendMessage(
+    { chatId: panel.chatId, threadId: panel.threadId },
+    { text: response.text, replyMarkup: { inline_keyboard: response.buttons } },
+  );
+  store.update(panel.panelId, (current) => ({ ...current, messageId: sent.messageId }));
+  return {};
+}
+
+async function handleVoceChatGenericCommand(cfg: OpenClawConfig, parsed: VoceChatParsedCommand): Promise<ReplyPayload> {
+  return {
+    text: renderVoceChatPanel(cfg, parsed.action, parsed.arg, "plain").text,
+  };
+}
+
+function renderVoceChatPanel(
+  cfg: OpenClawConfig,
+  action: VoceChatPanelAction,
+  arg: string,
+  panelId: string,
+): VoceChatPanelResponse {
+  switch (action) {
+    case "accounts":
+      return renderVoceChatAccountsPanel(cfg, panelId);
+    case "account-detail":
+      return renderVoceChatAccountDetailPanel(cfg, panelId, arg);
+    case "webhook":
+      return renderVoceChatWebhookPanel(cfg, panelId);
+    case "home":
+    default:
+      return renderVoceChatOverviewPanel(cfg, panelId);
+  }
+}
+
+function renderVoceChatOverviewPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
+  const accountIds = listVoceChatAccountIds(cfg);
+  const accounts = accountIds.map((accountId) => resolveVoceChatAccount(cfg, accountId));
+  const enabledCount = accounts.filter((account) => account.enabled).length;
+  const configuredCount = accounts.filter((account) => Boolean(account.baseUrl && account.apiKey)).length;
+  const inboundCount = accounts.filter((account) => account.enabled && account.inboundEnabled).length;
+  const defaultAccount = resolveVoceChatAccount(cfg, DEFAULT_ACCOUNT_ID);
+
+  const lines = [
+    "VoceChat 通道管理",
+    "",
+    `账号总数：${accounts.length}`,
+    `启用账号：${enabledCount}`,
+    `已配置账号：${configuredCount}`,
+    `启用入站：${inboundCount}`,
+    `默认账号：${defaultAccount.accountId}`,
+    `默认目标：${defaultAccount.defaultTo ?? "<未设置>"}`,
+    `默认 Webhook：${defaultAccount.webhookPath}`,
+  ];
+
+  return {
+    text: lines.join("\n"),
+    buttons: buildVoceChatMainButtons(panelId),
+  };
+}
+
+function renderVoceChatAccountsPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
+  const accounts = listVoceChatAccountIds(cfg).map((accountId) => resolveVoceChatAccount(cfg, accountId));
+  const lines = ["VoceChat 账号列表", ""];
+
+  if (accounts.length === 0) {
+    lines.push("当前未配置任何账号。", "", "请先在配置中补充账号信息。");
+  } else {
+    for (const account of accounts) {
+      lines.push(
+        `${account.enabled ? "✅" : "⛔"} ${account.accountId} · ${account.inboundEnabled ? "入站开" : "入站关"} · ${account.baseUrl ? "已配置" : "未配置"}`,
+      );
+    }
+    lines.push("", "点击下方按钮查看账号详情。", "可用“返回概览”返回主页。");
+  }
+
+  return {
+    text: lines.join("\n"),
+    buttons: buildVoceChatAccountButtons(panelId, accounts),
+  };
+}
+
+function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, accountIdRaw: string): VoceChatPanelResponse {
+  const accountId = normalizeAccountId(accountIdRaw || DEFAULT_ACCOUNT_ID);
+  const account = resolveVoceChatAccount(cfg, accountId);
+  const lines = [
+    `账号详情：${account.accountId}`,
+    "",
+    `启用状态：${account.enabled ? "已启用" : "未启用"}`,
+    `配置状态：${account.baseUrl && account.apiKey ? "完整" : "不完整"}`,
+    `名称：${account.name ?? "<未设置>"}`,
+    `基础地址：${account.baseUrl || "<未设置>"}`,
+    `默认目标：${account.defaultTo ?? "<未设置>"}`,
+    `Webhook 路径：${account.webhookPath}`,
+    `Webhook 鉴权：${account.webhookApiKey ? "已设置" : "未设置"}`,
+    `入站模式：${account.inboundEnabled ? "webhook+outbound" : "outbound-only"}`,
+    `确认回复：${account.inboundAckEnabled ? "开启" : "关闭"}`,
+    `私聊白名单：${account.allowFrom.length}`,
+    `群聊白名单：${account.groupAllowFrom.length}`,
+  ];
+
+  return {
+    text: lines.join("\n"),
+    buttons: [
+      [
+        { text: "返回概览", callback_data: buildVoceChatPanelCallback(panelId, "h") },
+        { text: "账号列表", callback_data: buildVoceChatPanelCallback(panelId, "l") },
+      ],
+      [
+        { text: "Webhook", callback_data: buildVoceChatPanelCallback(panelId, "w") },
+      ],
+    ],
+  };
+}
+
+function renderVoceChatWebhookPanel(cfg: OpenClawConfig, panelId: string): VoceChatPanelResponse {
+  const accountIds = listVoceChatAccountIds(cfg);
+  const lines = ["VoceChat Webhook 总览", ""];
+
+  if (accountIds.length === 0) {
+    lines.push("当前未配置任何账号。", "", "请先在配置中补充账号信息。");
+  } else {
+    for (const accountId of accountIds) {
+      const account = resolveVoceChatAccount(cfg, accountId);
+      lines.push(
+        `${account.enabled && account.inboundEnabled ? "✅" : "⛔"} ${account.accountId} · ${account.webhookPath} · ${account.webhookApiKey ? "鉴权开" : "鉴权关"}`,
+      );
+    }
+    lines.push("", `默认回退路径：${DEFAULT_WEBHOOK_PATH}`);
+  }
+
+  return {
+    text: lines.join("\n"),
+    buttons: buildVoceChatMainButtons(panelId),
+  };
+}
+
+function buildVoceChatMainButtons(panelId: string): TelegramInlineKeyboardButton[][] {
+  return [
+    [
+      { text: "概览", callback_data: buildVoceChatPanelCallback(panelId, "h") },
+      { text: "账号", callback_data: buildVoceChatPanelCallback(panelId, "l") },
+    ],
+    [
+      { text: "Webhook", callback_data: buildVoceChatPanelCallback(panelId, "w") },
+    ],
+  ];
+}
+
+function buildVoceChatAccountButtons(panelId: string, accounts: ResolvedAccount[]): TelegramInlineKeyboardButton[][] {
+  const rows: TelegramInlineKeyboardButton[][] = [];
+  let row: TelegramInlineKeyboardButton[] = [];
+
+  for (const account of accounts) {
+    row.push({
+      text: `${account.enabled ? "✅" : "⛔"}${account.accountId}`,
+      callback_data: buildVoceChatPanelCallback(panelId, "a", account.accountId),
+    });
+    if (row.length === 2) {
+      rows.push(row);
+      row = [];
+    }
+  }
+
+  if (row.length > 0) rows.push(row);
+  rows.push([{ text: "返回概览", callback_data: buildVoceChatPanelCallback(panelId, "h") }]);
+  return rows;
+}
+
+function buildVoceChatPanelCallback(panelId: string, action: "h" | "l" | "a" | "w", arg?: string): string {
+  return arg
+    ? `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action} ${arg}`
+    : `/${VOCECHAT_CONTROL_COMMAND} p ${panelId} ${action}`;
+}
+
+function parseVoceChatCommandArgs(rawArgs: string): VoceChatParsedCommand {
+  const tokens = rawArgs.trim().split(/\s+/).filter(Boolean);
+  if (tokens[0] === "p" && tokens[1]) {
+    return {
+      panelId: tokens[1],
+      action: decodeVoceChatPanelAction(tokens[2]),
+      arg: tokens.slice(3).join(" "),
+    };
+  }
+  return {
+    panelId: null,
+    action: decodeVoceChatPanelAction(tokens[0]),
+    arg: tokens.slice(1).join(" "),
+  };
+}
+
+function decodeVoceChatPanelAction(raw: string | undefined): VoceChatPanelAction {
+  switch ((raw ?? "").trim().toLowerCase()) {
+    case "l":
+    case "list":
+    case "accounts":
+      return "accounts";
+    case "a":
+    case "account":
+    case "detail":
+      return "account-detail";
+    case "w":
+    case "webhook":
+      return "webhook";
+    case "h":
+    case "home":
+    case "menu":
+    case "status":
+    default:
+      return "home";
+  }
+}
+
+function isVoceChatAdminAuthorized(ctx: PluginCommandContext, management: VoceChatManagementConfig): boolean {
+  if (!ctx.isAuthorizedSender) return false;
+  const admins = management.adminSenderIds.map(normalizeIdentity).filter(Boolean);
+  if (admins.length === 0) return true;
+  const candidates = new Set<string>();
+  for (const value of [ctx.senderId, ctx.from]) {
+    const normalized = normalizeIdentity(value);
+    if (!normalized) continue;
+    candidates.add(normalized);
+    if (!normalized.includes(":")) {
+      candidates.add(normalizeIdentity(`${ctx.channel}:${normalized}`));
+    }
+  }
+  return [...candidates].some((candidate) => admins.includes(candidate));
+}
+
+function normalizeIdentity(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function resolveVoceChatTelegramRuntime(cfg: OpenClawConfig): { botToken: string; apiBaseUrl?: string; proxyUrl?: string | null } | null {
+  const telegram = asRecord(cfg.channels?.telegram);
+  const botToken = normalizeString(telegram.botToken);
+  if (!botToken) return null;
+  return {
+    botToken,
+    apiBaseUrl: normalizeString(telegram.apiBaseUrl) || undefined,
+    proxyUrl: normalizeString(telegram.proxy) || undefined,
+  };
+}
+
 const plugin = {
   id: CHANNEL_ID,
   name: "VoceChat Channel",
@@ -1423,6 +1815,7 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     setVoceChatRuntime(api.runtime);
     api.registerChannel({ plugin: voceChatChannel });
+    registerVoceChatManagementCommand(api);
   },
 };
 
