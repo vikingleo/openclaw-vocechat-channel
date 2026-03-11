@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 
@@ -8,6 +11,7 @@ import {
   DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
   DEFAULT_WEBHOOK_MAX_BODY_BYTES,
   formatTextWithAttachmentLinks,
+  loadOutboundMediaFromUrl,
   readJsonBodyWithLimit,
   registerPluginHttpRoute,
   resolveOutboundMediaUrls,
@@ -108,6 +112,12 @@ type TargetKind = "user" | "group";
 type ParsedTarget = {
   kind: TargetKind;
   id: string;
+};
+
+type VoceChatHttpResponse = {
+  status: number;
+  ok: boolean;
+  body: string;
 };
 
 type InboundEvent = {
@@ -570,6 +580,398 @@ function buildSendUrl(account: ResolvedAccount, target: ParsedTarget): string {
   return `${account.baseUrl}/${rawPath}`;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = normalizeString(hostname).toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
+}
+
+function createAbortError(): Error {
+  const error = new Error("This operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function canUseLoopbackFallback(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    return (parsed.protocol === "https:" || parsed.protocol === "http:") && !isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function requestVoceChatApi(params: {
+  url: string;
+  method: "POST";
+  headers: Record<string, string>;
+  body: string | Buffer;
+  signal: AbortSignal;
+}): Promise<VoceChatHttpResponse> {
+  if (canUseLoopbackFallback(params.url)) {
+    try {
+      return await requestVoceChatApiViaLoopback(params);
+    } catch (loopbackError) {
+      const loopbackDetail = loopbackError instanceof Error ? loopbackError.message : String(loopbackError);
+      try {
+        return await requestVoceChatApiViaFetch(params);
+      } catch (fetchError) {
+        const fetchDetail = fetchError instanceof Error ? fetchError.message : String(fetchError);
+        throw new Error(
+          `[vocechat] request failed via loopback (${loopbackDetail}); configured host fallback failed (${fetchDetail})`,
+        );
+      }
+    }
+  }
+
+  try {
+    return await requestVoceChatApiViaFetch(params);
+  } catch (originalError) {
+    if (!canUseLoopbackFallback(params.url)) throw originalError;
+
+    try {
+      return await requestVoceChatApiViaLoopback(params);
+    } catch (fallbackError) {
+      const primaryDetail = originalError instanceof Error ? originalError.message : String(originalError);
+      const fallbackDetail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(
+        `[vocechat] request failed via configured host (${primaryDetail}); loopback fallback failed (${fallbackDetail})`,
+      );
+    }
+  }
+}
+
+async function requestVoceChatApiViaFetch(params: {
+  url: string;
+  method: "POST";
+  headers: Record<string, string>;
+  body: string | Buffer;
+  signal: AbortSignal;
+}): Promise<VoceChatHttpResponse> {
+  const response = await fetch(params.url, {
+    method: params.method,
+    headers: params.headers,
+    body: params.body as BodyInit,
+    signal: params.signal,
+  });
+
+  const body = await response.text();
+  return {
+    status: response.status,
+    ok: response.ok,
+    body,
+  };
+}
+
+async function requestVoceChatApiViaLoopback(params: {
+  url: string;
+  method: "POST";
+  headers: Record<string, string>;
+  body: string | Buffer;
+  signal: AbortSignal;
+}): Promise<VoceChatHttpResponse> {
+  const parsed = new URL(params.url);
+  const isHttps = parsed.protocol === "https:";
+  const transport = isHttps ? https : http;
+  const port = Number(parsed.port || (isHttps ? 443 : 80));
+
+  return await new Promise<VoceChatHttpResponse>((resolve, reject) => {
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      params.signal.removeEventListener("abort", handleAbort);
+      callback();
+    };
+
+    const handleAbort = () => {
+      const abortError = createAbortError();
+      request.destroy(abortError);
+      finish(() => reject(abortError));
+    };
+
+    const request = transport.request(
+      {
+        protocol: parsed.protocol,
+        hostname: "127.0.0.1",
+        port,
+        method: params.method,
+        path: `${parsed.pathname}${parsed.search}`,
+        headers: {
+          ...params.headers,
+          host: parsed.host,
+        },
+        servername: isHttps ? parsed.hostname : undefined,
+        rejectUnauthorized: isHttps ? true : undefined,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          finish(() =>
+            resolve({
+              status: response.statusCode ?? 0,
+              ok: Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300),
+              body,
+            }),
+          );
+        });
+      },
+    );
+
+    request.on("error", (error) => {
+      finish(() => reject(error));
+    });
+
+    if (params.signal.aborted) {
+      handleAbort();
+      return;
+    }
+
+    params.signal.addEventListener("abort", handleAbort, { once: true });
+    request.end(params.body);
+  });
+}
+
+function parseJsonObject(rawBody: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    return asRecord(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMediaCaption(text: string, mediaUrl?: string): string {
+  const normalizedText = formatModelTagForVoceChat(text).trim();
+  if (!normalizedText) return "";
+
+  const normalizedMedia = normalizeString(mediaUrl);
+  if (!normalizedMedia) return normalizedText;
+
+  const lines = normalizedText
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== normalizedMedia && trimmed !== `Attachment: ${normalizedMedia}` && trimmed !== `附件: ${normalizedMedia}`;
+    });
+
+  return lines.join("\n").trim();
+}
+
+function inferVoceChatPayloadContentType(mediaContentType?: string): "vocechat/file" | "vocechat/audio" {
+  const normalized = normalizeString(mediaContentType).toLowerCase();
+  return normalized.startsWith("audio/") ? "vocechat/audio" : "vocechat/file";
+}
+
+function buildMultipartUploadBody(params: {
+  fileId: string;
+  fileName: string;
+  contentType?: string;
+  buffer: Buffer;
+}): { contentType: string; body: Buffer } {
+  const boundary = `----openclaw-vocechat-${randomUUID()}`;
+  const contentType = normalizeString(params.contentType) || "application/octet-stream";
+  const safeFileName = path.basename(params.fileName || "attachment.bin");
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file_id"\r\n\r\n` +
+        `${params.fileId}\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="chunk_data"; filename="${safeFileName}"\r\n` +
+        `Content-Type: ${contentType}\r\n\r\n`,
+      "utf8",
+    ),
+    params.buffer,
+    Buffer.from(
+      `\r\n--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="chunk_is_last"\r\n\r\n` +
+        `true\r\n` +
+        `--${boundary}--\r\n`,
+      "utf8",
+    ),
+  ]);
+
+  return {
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    body,
+  };
+}
+
+async function prepareVoceChatFileUpload(params: {
+  account: ResolvedAccount;
+  fileName: string;
+  contentType?: string;
+  signal: AbortSignal;
+}): Promise<string> {
+  const response = await requestVoceChatApi({
+    url: `${params.account.baseUrl}/api/bot/file/prepare`,
+    method: "POST",
+    headers: {
+      "x-api-key": params.account.apiKey,
+      "content-type": "application/json; charset=utf-8",
+      accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+    },
+    body: JSON.stringify({
+      content_type: normalizeString(params.contentType) || "application/octet-stream",
+      filename: params.fileName,
+    }),
+    signal: params.signal,
+  });
+
+  if (!response.ok) {
+    const detail = response.body.trim().slice(0, 500);
+    throw new Error(
+      `[vocechat] file prepare failed: HTTP ${response.status}${detail ? `, body=${detail}` : ""}`,
+    );
+  }
+
+  const direct = normalizeString(response.body.replace(/^"+|"+$/g, ""));
+  if (direct) return direct;
+
+  const parsed = parseJsonObject(response.body);
+  const fileId = normalizeString(parsed?.file_id ?? parsed?.fileId ?? parsed?.id);
+  if (!fileId) throw new Error("[vocechat] file prepare failed: missing file id.");
+  return fileId;
+}
+
+async function uploadVoceChatFile(params: {
+  account: ResolvedAccount;
+  fileId: string;
+  fileName: string;
+  contentType?: string;
+  buffer: Buffer;
+  signal: AbortSignal;
+}): Promise<string> {
+  const multipart = buildMultipartUploadBody({
+    fileId: params.fileId,
+    fileName: params.fileName,
+    contentType: params.contentType,
+    buffer: params.buffer,
+  });
+
+  const response = await requestVoceChatApi({
+    url: `${params.account.baseUrl}/api/bot/file/upload`,
+    method: "POST",
+    headers: {
+      "x-api-key": params.account.apiKey,
+      "content-type": multipart.contentType,
+      "content-length": String(multipart.body.byteLength),
+      accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+    },
+    body: multipart.body,
+    signal: params.signal,
+  });
+
+  if (!response.ok) {
+    const detail = response.body.trim().slice(0, 500);
+    throw new Error(
+      `[vocechat] file upload failed: HTTP ${response.status}${detail ? `, body=${detail}` : ""}`,
+    );
+  }
+
+  const parsed = parseJsonObject(response.body);
+  const uploadPath = normalizeString(parsed?.path);
+  if (!uploadPath) throw new Error("[vocechat] file upload failed: missing uploaded path.");
+  return uploadPath;
+}
+
+async function sendVoceChatMedia(ctx: ChannelOutboundContext): Promise<OutboundDeliveryResult> {
+  const mediaUrl = normalizeString(ctx.mediaUrl);
+  if (!mediaUrl) throw new Error("[vocechat] mediaUrl is required for media delivery.");
+
+  const account = resolveVoceChatAccount(ctx.cfg, ctx.accountId);
+  if (!account.enabled) throw new Error("[vocechat] Channel account is disabled.");
+  if (!account.baseUrl) throw new Error("[vocechat] channels.vocechat.baseUrl is required.");
+  if (!account.apiKey) throw new Error("[vocechat] channels.vocechat.apiKey is required.");
+
+  const target = ensureTarget({
+    to: ctx.to,
+    defaultTo: account.defaultTo,
+    mode: "implicit",
+  });
+
+  const caption = normalizeMediaCaption(ctx.text, mediaUrl);
+  if (caption) {
+    await sendVoceChatMessage({ ...ctx, text: caption });
+  }
+
+  const media = await loadOutboundMediaFromUrl(mediaUrl, {
+    mediaLocalRoots: Array.isArray(ctx.mediaLocalRoots) ? ctx.mediaLocalRoots : undefined,
+  });
+
+  const fileName = normalizeString(media.fileName) || path.basename(mediaUrl) || "attachment.bin";
+  const payloadContentType = inferVoceChatPayloadContentType(media.contentType);
+  const url = buildSendUrl(account, target);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), account.timeoutMs);
+  try {
+    const fileId = await prepareVoceChatFileUpload({
+      account,
+      fileName,
+      contentType: media.contentType,
+      signal: controller.signal,
+    });
+    const uploadPath = await uploadVoceChatFile({
+      account,
+      fileId,
+      fileName,
+      contentType: media.contentType,
+      buffer: media.buffer,
+      signal: controller.signal,
+    });
+    const response = await requestVoceChatApi({
+      url,
+      method: "POST",
+      headers: {
+        "x-api-key": account.apiKey,
+        "content-type": payloadContentType,
+        accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+      },
+      body: JSON.stringify({ path: uploadPath }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const detail = response.body.trim().slice(0, 500);
+      throw new Error(
+        `[vocechat] media send failed: HTTP ${response.status}${detail ? `, body=${detail}` : ""}`,
+      );
+    }
+
+    const messageId = parseMessageId(response.body);
+    rememberRecentMessage(recentOutboundMessageIds, makeMessageKey(account.accountId, messageId));
+
+    return {
+      channel: CHANNEL_ID,
+      messageId,
+      chatId: `${target.kind}:${target.id}`,
+      timestamp: Date.now(),
+      meta: {
+        accountId: account.accountId,
+        targetKind: target.kind,
+        targetId: target.id,
+        status: response.status,
+        mediaUrl,
+        uploadPath,
+      },
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function parseMessageId(rawBody: string): string {
   const body = rawBody.trim();
   if (!body) return `${Date.now()}`;
@@ -675,11 +1077,12 @@ async function sendVoceChatMessage(
   const timeout = setTimeout(() => controller.abort(), account.timeoutMs);
   try {
     let rawBody = "";
-    let response: Response | null = null;
+    let response: VoceChatHttpResponse | null = null;
     const contentTypes: string[] = ["text/markdown", "text/plain"];
 
     for (const contentType of contentTypes) {
-      const current = await fetch(url, {
+      const current = await requestVoceChatApi({
+        url,
         method: "POST",
         headers: {
           "x-api-key": account.apiKey,
@@ -689,7 +1092,7 @@ async function sendVoceChatMessage(
         body: text,
         signal: controller.signal,
       });
-      const currentBody = await current.text();
+      const currentBody = current.body;
 
       if (current.ok) {
         response = current;
@@ -753,11 +1156,12 @@ async function sendVoceChatReplyToMessage(params: {
   const timeout = setTimeout(() => controller.abort(), account.timeoutMs);
   try {
     let rawBody = "";
-    let response: Response | null = null;
+    let response: VoceChatHttpResponse | null = null;
     const contentTypes: string[] = ["text/markdown", "text/plain"];
 
     for (const contentType of contentTypes) {
-      const current = await fetch(url, {
+      const current = await requestVoceChatApi({
+        url,
         method: "POST",
         headers: {
           "x-api-key": account.apiKey,
@@ -767,7 +1171,7 @@ async function sendVoceChatReplyToMessage(params: {
         body: text,
         signal: controller.signal,
       });
-      const currentBody = await current.text();
+      const currentBody = current.body;
 
       if (current.ok) {
         response = current;
@@ -1002,7 +1406,8 @@ async function sendVoceChatReaction(params: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), account.timeoutMs);
   try {
-    const response = await fetch(url, {
+    const response = await requestVoceChatApi({
+      url,
       method: "POST",
       headers: {
         "x-api-key": account.apiKey,
@@ -1014,7 +1419,7 @@ async function sendVoceChatReaction(params: {
     });
 
     if (!response.ok) {
-      const detail = (await response.text()).trim().slice(0, 500);
+      const detail = response.body.trim().slice(0, 500);
       throw new Error(`HTTP ${response.status}${detail ? `, body=${detail}` : ""}`);
     }
   } finally {
@@ -1188,7 +1593,27 @@ async function processInboundEvent(params: {
   });
 
   const deliverReply = createNormalizedOutboundDeliverer(async (payload) => {
-    const combined = formatTextWithAttachmentLinks(payload.text, resolveOutboundMediaUrls(payload));
+    const mediaUrls = resolveOutboundMediaUrls(payload);
+    const text = normalizeString(payload.text);
+
+    if (mediaUrls.length > 0) {
+      for (let index = 0; index < mediaUrls.length; index += 1) {
+        const mediaUrl = mediaUrls[index];
+        const caption = index === 0 ? text : "";
+        await sendVoceChatMedia(
+          {
+            cfg,
+            to: event.replyTarget,
+            text: caption,
+            mediaUrl,
+            accountId: account.accountId,
+          } as ChannelOutboundContext,
+        );
+      }
+      return;
+    }
+
+    const combined = formatTextWithAttachmentLinks(text, []);
     if (!combined) return;
 
     if (event.chatType === "group") {
@@ -1513,7 +1938,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       }
     },
     sendText: async (ctx) => sendVoceChatMessage(ctx),
-    sendMedia: async (ctx) => sendVoceChatMessage(ctx, ctx.mediaUrl),
+    sendMedia: async (ctx) => sendVoceChatMedia(ctx),
   },
   gateway: {
     startAccount: async (ctx) => {

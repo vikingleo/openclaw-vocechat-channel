@@ -4,6 +4,7 @@ declare module "openclaw/plugin-sdk" {
   export const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS: number;
   export const DEFAULT_WEBHOOK_MAX_BODY_BYTES: number;
   export const formatTextWithAttachmentLinks: any;
+  export const loadOutboundMediaFromUrl: any;
   export const readJsonBodyWithLimit: any;
   export const registerPluginHttpRoute: any;
   export const resolveOutboundMediaUrls: any;
