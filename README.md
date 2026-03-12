@@ -93,6 +93,57 @@
 
 完整示例见：`config/plugin-config.example.json5`
 
+## 附件发送脚本
+
+仓库内提供了一个交互式脚本，可直接向指定 `VoceChat user` 发送附件：
+
+```bash
+chmod +x ./scripts/send-vocechat-attachment.sh
+./scripts/send-vocechat-attachment.sh /path/to/file.pdf
+```
+
+也支持把远程文件 URL 当成附件参数：
+
+```bash
+./scripts/send-vocechat-attachment.sh https://example.com/report.pdf
+```
+
+脚本行为：
+
+- 自动按 OpenClaw 规则读取配置文件：
+  - `OPENCLAW_CONFIG_PATH`
+  - `CLAWDBOT_CONFIG_PATH`
+  - `OPENCLAW_STATE_DIR/openclaw.json`
+  - `CLAWDBOT_STATE_DIR/openclaw.json`
+  - 默认 `~/.openclaw/openclaw.json`
+- 若配置中缺少 `channels.vocechat.baseUrl` 或 `apiKey`
+  - 继续从本机 `.env` 兜底查找
+- 若 `.env` 仍然缺失
+  - 在终端交互输入
+- 交互式选择账号、输入目标 `user id`、可选输入附言后再发送
+
+`.env` 支持的常见变量名：
+
+- `VOCECHAT_BASE_URL`
+- `OPENCLAW_VOCECHAT_BASE_URL`
+- `VOCECHAT_API_KEY`
+- `OPENCLAW_VOCECHAT_API_KEY`
+- `VOCECHAT_BOT_API_KEY`
+- `OPENCLAW_VOCECHAT_BOT_API_KEY`
+
+如果是多账号，也支持按账号名查找，例如账号 `backup`：
+
+- `VOCECHAT_BACKUP_BASE_URL`
+- `VOCECHAT_BACKUP_API_KEY`
+- `OPENCLAW_VOCECHAT_BACKUP_BASE_URL`
+- `OPENCLAW_VOCECHAT_BACKUP_API_KEY`
+
+依赖：
+
+- `node`
+- `curl`
+- `file`（可选，仅用于更准确识别附件 MIME）
+
 ## 关键配置字段
 
 - `enabled`
