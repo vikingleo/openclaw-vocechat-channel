@@ -156,6 +156,33 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 ./scripts/install.sh --link
 ```
 
+### 推荐流程
+
+如果你是在一台全新机器上首次部署，建议按这个顺序做：
+
+1. 先安装 VoceChat 服务端和插件骨架
+
+```bash
+./scripts/install.sh \
+  --install-server \
+  --server-bin-url https://artifacts.example.com/vocechat/vocechat-server.bin \
+  --server-bin-sha256 YOUR_SHA256 \
+  --base-url http://127.0.0.1:3000
+```
+
+2. 登录 VoceChat 完成初始化，创建或查看 Bot API Key
+
+3. 再次执行安装脚本，把 `apiKey` 补齐并启用出站通路
+
+```bash
+./scripts/install.sh \
+  --base-url http://127.0.0.1:3000 \
+  --api-key YOUR_VOCECHAT_API_KEY \
+  --default-to user:2
+```
+
+4. 如需入站 webhook，再配置公网 HTTPS 和反向代理
+
 健康检查：
 
 ```bash
@@ -172,6 +199,44 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 
 ```bash
 ./scripts/uninstall.sh --uninstall-server --remove-server-data
+```
+
+### 常见安装场景
+
+只安装插件，不安装本机 VoceChat 服务端：
+
+```bash
+./scripts/install.sh \
+  --base-url https://your-vocechat.example \
+  --api-key YOUR_VOCECHAT_API_KEY
+```
+
+安装本机 VoceChat，并使用本地二进制：
+
+```bash
+./scripts/install.sh \
+  --install-server \
+  --server-bin /absolute/path/vocechat-server.bin \
+  --base-url http://127.0.0.1:3000
+```
+
+安装本机 VoceChat，但暂时不写 systemd：
+
+```bash
+./scripts/install.sh \
+  --install-server \
+  --server-bin-url https://artifacts.example.com/vocechat/vocechat-server.bin \
+  --server-service-scope none \
+  --base-url http://127.0.0.1:3000
+```
+
+安装插件，但不写 managed skill：
+
+```bash
+./scripts/install.sh \
+  --base-url https://your-vocechat.example \
+  --api-key YOUR_VOCECHAT_API_KEY \
+  --skill-scope none
 ```
 
 ### 是否能一键完全打通
@@ -209,6 +274,51 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 
 - 放到你自己的制品仓库、私有 Release 或对象存储
 - 用 `--server-bin-url` + `--server-bin-sha256` 安装
+
+## Doctor 使用说明
+
+`doctor.sh` 用来快速判断当前机器到底差在哪一层：
+
+```bash
+./scripts/doctor.sh
+```
+
+输出约定：
+
+- `OK`
+  - 该检查项已通过
+- `WARN`
+  - 不一定阻塞，但通常意味着功能不完整，或还没做完对应部署
+- `FAIL`
+  - 明确阻塞，需要先修复
+
+典型检查项包括：
+
+- `channels.vocechat.baseUrl` / `apiKey`
+- 插件是否已安装
+- 插件 runtime 依赖 `undici` 是否存在
+- `vocechat-send` skill 是否已注册
+- 本机 `vocechat-server` 二进制是否存在
+- `systemd` 服务是否存在、已启用、运行中
+
+常见结果解释：
+
+- `managed skill 目录不存在`
+  - 说明你还没跑过 `install.sh`，或安装时用了 `--skill-scope none`
+- `VoceChat 服务端二进制不存在`
+  - 说明当前机器没有走 `--install-server`，或者服务端安装目录不是默认路径
+- `VoceChat systemd 服务未运行`
+  - 说明 unit 已写但服务没起来，通常需要 `systemctl status vocechat.service` 进一步看日志
+- `channels.vocechat.apiKey 缺失`
+  - 说明插件骨架已经装了，但 Bot API Key 还没补齐，出站发送会不可用
+
+如果你的服务名或安装目录不是默认值，可以显式传参：
+
+```bash
+./scripts/doctor.sh \
+  --server-install-dir /opt/vocechat \
+  --server-service-name vocechat
+```
 
 ## 附件发送脚本
 
@@ -261,6 +371,15 @@ chmod +x ./scripts/send-vocechat-attachment.sh
 - `curl`
 - `file`（可选，仅用于更准确识别附件 MIME）
 
+常见示例：
+
+```bash
+./scripts/send-vocechat-attachment.sh /path/to/report.pdf
+sh ./scripts/vocechat-send.sh --to user:2 --text "处理完成"
+sh ./scripts/vocechat-send.sh --to group:5 --text "日报见附件" --file /path/to/report.pdf
+sh ./scripts/vocechat-send.sh --to user:2 --file https://example.com/report.pdf
+```
+
 ## OpenClaw Agent Skill
 
 插件现在内置了一个可给 OpenClaw agent 使用的 skill：
@@ -283,6 +402,32 @@ sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/re
 ```
 
 这样 OpenClaw agent 可以把它当作 managed skill 直接发现和使用。
+
+## 卸载说明
+
+只卸载插件与 skill，保留服务端：
+
+```bash
+./scripts/uninstall.sh
+```
+
+卸载插件并停掉 VoceChat `systemd` 服务，但保留目录和数据：
+
+```bash
+./scripts/uninstall.sh --uninstall-server --keep-server-files
+```
+
+完全移除插件、服务单元和数据目录：
+
+```bash
+./scripts/uninstall.sh --uninstall-server --remove-server-data
+```
+
+如果你只想停用插件，但保留原有 `channels.vocechat` 配置：
+
+```bash
+./scripts/uninstall.sh --keep-channel-config
+```
 
 ## 关键配置字段
 
