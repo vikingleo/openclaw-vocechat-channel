@@ -293,7 +293,51 @@ PLUGIN_INFO=""
 if have_cmd openclaw && openclaw plugins info vocechat >/dev/null 2>&1; then
   ok "VoceChat 插件已安装"
   PLUGIN_INFO=$(openclaw plugins info vocechat 2>/dev/null)
-  PLUGIN_INSTALL_PATH=$(printf '%s\n' "$PLUGIN_INFO" | sed -n 's/^Install path: //p' | tail -n 1)
+  PLUGIN_INSTALL_PATH=$(printf '%s' "$PLUGIN_INFO" | node --input-type=commonjs -e '
+const fs = require("fs");
+const path = require("path");
+
+const raw = fs.readFileSync(0, "utf8");
+const lines = raw.split(/\r?\n/);
+
+function extract(prefix) {
+  for (const line of lines) {
+    if (line.startsWith(prefix)) {
+      const value = line.slice(prefix.length).trim();
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
+const installPath = extract("Install path:");
+if (installPath) {
+  process.stdout.write(installPath);
+  process.exit(0);
+}
+
+const sourcePath = extract("Source path:");
+if (sourcePath) {
+  process.stdout.write(sourcePath);
+  process.exit(0);
+}
+
+const source = extract("Source:");
+if (!source) process.exit(0);
+
+if (/\.(?:[cm]?js|tsx?|jsx)$/i.test(source)) {
+  process.stdout.write(path.dirname(source));
+  process.exit(0);
+}
+
+process.stdout.write(source);
+'
+)
+  case "$PLUGIN_INSTALL_PATH" in
+    "~"|"~/"*)
+      PLUGIN_INSTALL_PATH=$(expand_home "$PLUGIN_INSTALL_PATH")
+      ;;
+  esac
   if [ -n "$PLUGIN_INSTALL_PATH" ]; then
     ok "VoceChat 插件安装目录可解析"
     if node --input-type=commonjs - "$PLUGIN_INSTALL_PATH" <<'NODE' >/dev/null 2>&1

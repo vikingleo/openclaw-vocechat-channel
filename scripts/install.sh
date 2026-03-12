@@ -47,6 +47,7 @@ SERVER_SERVICE_UNIT_PATH=""
 SERVER_SERVICE_ENABLED="false"
 CHANNEL_ENABLED="false"
 PLUGIN_INSTALL_PATH=""
+PLUGIN_ALREADY_PRESENT="false"
 
 cleanup() {
   if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
@@ -137,6 +138,29 @@ expand_home() {
       printf '%s\n' "$1"
       ;;
   esac
+}
+
+same_path() {
+  left=$1
+  right=$2
+  node --input-type=commonjs - "$left" "$right" <<'NODE' >/dev/null 2>&1
+const fs = require("fs");
+const path = require("path");
+
+function normalize(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+const left = normalize(process.argv[2]);
+const right = normalize(process.argv[3]);
+process.exit(left && right && left === right ? 0 : 1);
+NODE
 }
 
 resolve_config_path() {
@@ -618,7 +642,46 @@ install_server_binary() {
 
 discover_plugin_install_path() {
   if openclaw plugins info vocechat >/dev/null 2>&1; then
-    openclaw plugins info vocechat 2>/dev/null | sed -n 's/^Install path: //p' | tail -n 1
+    plugin_info=$(openclaw plugins info vocechat 2>/dev/null || true)
+    printf '%s' "$plugin_info" | node --input-type=commonjs -e '
+const fs = require("fs");
+const path = require("path");
+
+const raw = fs.readFileSync(0, "utf8");
+const lines = raw.split(/\r?\n/);
+
+function extract(prefix) {
+  for (const line of lines) {
+    if (line.startsWith(prefix)) {
+      const value = line.slice(prefix.length).trim();
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
+const installPath = extract("Install path:");
+if (installPath) {
+  process.stdout.write(installPath);
+  process.exit(0);
+}
+
+const sourcePath = extract("Source path:");
+if (sourcePath) {
+  process.stdout.write(sourcePath);
+  process.exit(0);
+}
+
+const source = extract("Source:");
+if (!source) process.exit(0);
+
+if (/\.(?:[cm]?js|tsx?|jsx)$/i.test(source)) {
+  process.stdout.write(path.dirname(source));
+  process.exit(0);
+}
+
+process.stdout.write(source);
+'
     return
   fi
   printf '\n'
@@ -641,6 +704,9 @@ NODE
 
 ensure_plugin_runtime_deps() {
   PLUGIN_INSTALL_PATH=$(discover_plugin_install_path)
+  if [ -n "$PLUGIN_INSTALL_PATH" ]; then
+    PLUGIN_INSTALL_PATH=$(expand_home "$PLUGIN_INSTALL_PATH")
+  fi
   [ -n "$PLUGIN_INSTALL_PATH" ] || {
     warn "未发现已安装的 VoceChat 插件目录，跳过 runtime 依赖安装"
     return 0
@@ -655,6 +721,32 @@ ensure_plugin_runtime_deps() {
     cd "$PLUGIN_INSTALL_PATH"
     npm install --omit=dev --no-package-lock >/dev/null
   )
+}
+
+upgrade_existing_plugin() {
+  target_dir=$1
+  [ -n "$target_dir" ] || die "缺少插件升级目标目录"
+  target_dir=$(expand_home "$target_dir")
+  [ -d "$target_dir" ] || die "插件升级目标目录不存在: $target_dir"
+  [ -w "$target_dir" ] || die "插件升级目标目录不可写: $target_dir"
+
+  if same_path "$target_dir" "$REPO_DIR"; then
+    log "当前仓库已是活动插件目录，跳过文件覆盖"
+    return 0
+  fi
+
+  backup_dir="$target_dir.bak-$(date +%Y%m%d-%H%M%S)"
+  log "检测到已安装插件，开始覆盖升级并复用现有配置"
+  log "插件升级目标: $target_dir"
+  log "插件目录备份: $backup_dir"
+
+  cp -R "$target_dir" "$backup_dir"
+
+  find "$target_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  cp -R "$REPO_DIR"/. "$target_dir"/
+
+  rm -rf "$target_dir/.git" "$target_dir/node_modules"
+  chmod +x "$target_dir/scripts/"*.sh 2>/dev/null || true
 }
 
 while [ $# -gt 0 ]; do
@@ -882,19 +974,11 @@ if [ "$INSTALL_SERVER" != "true" ] && [ "$CHANNEL_ENABLED" != "true" ]; then
   die "baseUrl 和 apiKey 不能为空"
 fi
 
-PLUGIN_ALREADY_INSTALLED=$(CONFIG_PATH="$CONFIG_FILE" node --input-type=commonjs - <<'NODE'
-const fs = require("fs");
-const path = process.env.CONFIG_PATH;
-let installed = false;
-if (path && fs.existsSync(path)) {
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path, "utf8"));
-    installed = Boolean(cfg.plugins?.installs?.vocechat);
-  } catch {}
-}
-process.stdout.write(installed ? "true" : "false");
-NODE
-)
+PLUGIN_INSTALL_PATH=$(discover_plugin_install_path)
+if [ -n "$PLUGIN_INSTALL_PATH" ]; then
+  PLUGIN_INSTALL_PATH=$(expand_home "$PLUGIN_INSTALL_PATH")
+  PLUGIN_ALREADY_PRESENT="true"
+fi
 
 BACKUP_FILE=""
 if [ -f "$CONFIG_FILE" ]; then
@@ -934,14 +1018,20 @@ if [ "$INSTALL_SERVER" = "true" ]; then
   install_server_binary
 fi
 
-if [ "$PLUGIN_ALREADY_INSTALLED" != "true" ]; then
+if [ "$PLUGIN_ALREADY_PRESENT" != "true" ]; then
   if [ "$LINK_MODE" = "true" ]; then
     openclaw plugins install -l "$REPO_DIR"
   else
     openclaw plugins install "$REPO_DIR"
   fi
 else
-  log "插件已安装，跳过 openclaw plugins install"
+  if [ -n "$PLUGIN_INSTALL_PATH" ]; then
+    upgrade_existing_plugin "$PLUGIN_INSTALL_PATH"
+  fi
+  log "插件已存在或已加载，跳过 openclaw plugins install"
+  if [ -n "$PLUGIN_INSTALL_PATH" ]; then
+    log "当前插件目录: $PLUGIN_INSTALL_PATH"
+  fi
 fi
 
 ensure_plugin_runtime_deps
