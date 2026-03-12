@@ -4,6 +4,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PATH_HELPER="$REPO_DIR/skills/vocechat-send/scripts/lib/openclaw-path-utils.cjs"
 
 LINK_MODE="false"
 CONFIG_PATH=""
@@ -127,76 +128,19 @@ require_cmd() {
 }
 
 expand_home() {
-  HOME_DIR="$HOME" node --input-type=commonjs - "$1" <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const home = String(process.env.HOME_DIR || process.env.HOME || "").trim();
-let value = String(process.argv[2] ?? "").trim();
-
-if (!value) {
-  process.stdout.write("");
-  process.exit(0);
+  HOME_DIR="$HOME" node "$PATH_HELPER" expand-home "$1"
 }
 
-if (value === "~") {
-  process.stdout.write(home);
-  process.exit(0);
-}
-
-if (value.startsWith("~/")) {
-  process.stdout.write(path.join(home, value.slice(2)));
-  process.exit(0);
-}
-
-const weirdMarker = `${path.sep}~${path.sep}`;
-const weirdIndex = value.indexOf(weirdMarker);
-if (weirdIndex >= 0) {
-  const suffix = value.slice(weirdIndex + 2).replace(new RegExp(`^\\${path.sep}+`), "");
-  const candidate = path.join(home, suffix);
-  if (!fs.existsSync(value) || value.startsWith(`${home}${path.sep}~${path.sep}`)) {
-    process.stdout.write(candidate);
-    process.exit(0);
-  }
-}
-
-process.stdout.write(value);
-NODE
+resolve_path() {
+  HOME_DIR="$HOME" node "$PATH_HELPER" resolve-path "$1"
 }
 
 same_path() {
   left=$1
   right=$2
-  node --input-type=commonjs - "$left" "$right" <<'NODE' >/dev/null 2>&1
-const fs = require("fs");
-const path = require("path");
-const home = String(process.env.HOME || "").trim();
-
-function normalize(raw) {
-  let value = String(raw || "").trim();
-  if (!value) return "";
-  if (value === "~") return home;
-  if (value.startsWith("~/")) return path.join(home, value.slice(2));
-  const weirdMarker = `${path.sep}~${path.sep}`;
-  const weirdIndex = value.indexOf(weirdMarker);
-  if (weirdIndex >= 0) {
-    const suffix = value.slice(weirdIndex + 2).replace(new RegExp(`^\\${path.sep}+`), "");
-    const candidate = path.join(home, suffix);
-    if (!fs.existsSync(value) || value.startsWith(`${home}${path.sep}~${path.sep}`)) {
-      value = candidate;
-    }
-  }
-  try {
-    return fs.realpathSync(value);
-  } catch {
-    return path.resolve(value);
-  }
-}
-
-const left = normalize(process.argv[2]);
-const right = normalize(process.argv[3]);
-process.exit(left && right && left === right ? 0 : 1);
-NODE
+  left=$(resolve_path "$left")
+  right=$(resolve_path "$right")
+  [ -n "$left" ] && [ -n "$right" ] && [ "$left" = "$right" ]
 }
 
 resolve_config_path() {
@@ -679,45 +623,7 @@ install_server_binary() {
 discover_plugin_install_path() {
   if openclaw plugins info vocechat >/dev/null 2>&1; then
     plugin_info=$(openclaw plugins info vocechat 2>/dev/null || true)
-    printf '%s' "$plugin_info" | node --input-type=commonjs -e '
-const fs = require("fs");
-const path = require("path");
-
-const raw = fs.readFileSync(0, "utf8");
-const lines = raw.split(/\r?\n/);
-
-function extract(prefix) {
-  for (const line of lines) {
-    if (line.startsWith(prefix)) {
-      const value = line.slice(prefix.length).trim();
-      if (value) return value;
-    }
-  }
-  return "";
-}
-
-const installPath = extract("Install path:");
-if (installPath) {
-  process.stdout.write(installPath);
-  process.exit(0);
-}
-
-const sourcePath = extract("Source path:");
-if (sourcePath) {
-  process.stdout.write(sourcePath);
-  process.exit(0);
-}
-
-const source = extract("Source:");
-if (!source) process.exit(0);
-
-if (/\.(?:[cm]?js|tsx?|jsx)$/i.test(source)) {
-  process.stdout.write(path.dirname(source));
-  process.exit(0);
-}
-
-process.stdout.write(source);
-'
+    printf '%s' "$plugin_info" | HOME_DIR="$HOME" node "$PATH_HELPER" plugin-dir-from-info
     return
   fi
   printf '\n'

@@ -2,6 +2,10 @@
 
 set -eu
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PATH_HELPER="$REPO_DIR/skills/vocechat-send/scripts/lib/openclaw-path-utils.cjs"
+
 CONFIG_PATH=""
 SERVER_INSTALL_DIR="$HOME/.vocechat-server"
 SERVER_DATA_DIR=""
@@ -50,41 +54,7 @@ have_cmd() {
 }
 
 expand_home() {
-  HOME_DIR="$HOME" node --input-type=commonjs - "$1" <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const home = String(process.env.HOME_DIR || process.env.HOME || "").trim();
-let value = String(process.argv[2] ?? "").trim();
-
-if (!value) {
-  process.stdout.write("");
-  process.exit(0);
-}
-
-if (value === "~") {
-  process.stdout.write(home);
-  process.exit(0);
-}
-
-if (value.startsWith("~/")) {
-  process.stdout.write(path.join(home, value.slice(2)));
-  process.exit(0);
-}
-
-const weirdMarker = `${path.sep}~${path.sep}`;
-const weirdIndex = value.indexOf(weirdMarker);
-if (weirdIndex >= 0) {
-  const suffix = value.slice(weirdIndex + 2).replace(new RegExp(`^\\${path.sep}+`), "");
-  const candidate = path.join(home, suffix);
-  if (!fs.existsSync(value) || value.startsWith(`${home}${path.sep}~${path.sep}`)) {
-    process.stdout.write(candidate);
-    process.exit(0);
-  }
-}
-
-process.stdout.write(value);
-NODE
+  HOME_DIR="$HOME" node "$PATH_HELPER" expand-home "$1"
 }
 
 resolve_config_path() {
@@ -317,51 +287,7 @@ PLUGIN_INFO=""
 if have_cmd openclaw && openclaw plugins info vocechat >/dev/null 2>&1; then
   ok "VoceChat 插件已安装"
   PLUGIN_INFO=$(openclaw plugins info vocechat 2>/dev/null)
-  PLUGIN_INSTALL_PATH=$(printf '%s' "$PLUGIN_INFO" | node --input-type=commonjs -e '
-const fs = require("fs");
-const path = require("path");
-
-const raw = fs.readFileSync(0, "utf8");
-const lines = raw.split(/\r?\n/);
-
-function extract(prefix) {
-  for (const line of lines) {
-    if (line.startsWith(prefix)) {
-      const value = line.slice(prefix.length).trim();
-      if (value) return value;
-    }
-  }
-  return "";
-}
-
-const installPath = extract("Install path:");
-if (installPath) {
-  process.stdout.write(installPath);
-  process.exit(0);
-}
-
-const sourcePath = extract("Source path:");
-if (sourcePath) {
-  process.stdout.write(sourcePath);
-  process.exit(0);
-}
-
-const source = extract("Source:");
-if (!source) process.exit(0);
-
-if (/\.(?:[cm]?js|tsx?|jsx)$/i.test(source)) {
-  process.stdout.write(path.dirname(source));
-  process.exit(0);
-}
-
-process.stdout.write(source);
-'
-)
-  case "$PLUGIN_INSTALL_PATH" in
-    "~"|"~/"*)
-      PLUGIN_INSTALL_PATH=$(expand_home "$PLUGIN_INSTALL_PATH")
-      ;;
-  esac
+  PLUGIN_INSTALL_PATH=$(printf '%s' "$PLUGIN_INFO" | HOME_DIR="$HOME" node "$PATH_HELPER" plugin-dir-from-info)
   if [ -n "$PLUGIN_INSTALL_PATH" ]; then
     ok "VoceChat 插件安装目录可解析"
     if node --input-type=commonjs - "$PLUGIN_INSTALL_PATH" <<'NODE' >/dev/null 2>&1

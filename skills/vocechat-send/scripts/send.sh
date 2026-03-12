@@ -4,43 +4,10 @@ set -eu
 
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 STATE_DIR="${OPENCLAW_STATE_DIR:-${CLAWDBOT_STATE_DIR:-$HOME/.openclaw}}"
+PATH_HELPER="$SKILL_DIR/lib/openclaw-path-utils.cjs"
 
 expand_home() {
-  HOME_DIR="$HOME" node --input-type=commonjs - "$1" <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const home = String(process.env.HOME_DIR || process.env.HOME || "").trim();
-let value = String(process.argv[2] ?? "").trim();
-
-if (!value) {
-  process.stdout.write("");
-  process.exit(0);
-}
-
-if (value === "~") {
-  process.stdout.write(home);
-  process.exit(0);
-}
-
-if (value.startsWith("~/")) {
-  process.stdout.write(path.join(home, value.slice(2)));
-  process.exit(0);
-}
-
-const weirdMarker = `${path.sep}~${path.sep}`;
-const weirdIndex = value.indexOf(weirdMarker);
-if (weirdIndex >= 0) {
-  const suffix = value.slice(weirdIndex + 2).replace(new RegExp(`^\\${path.sep}+`), "");
-  const candidate = path.join(home, suffix);
-  if (!fs.existsSync(value) || value.startsWith(`${home}${path.sep}~${path.sep}`)) {
-    process.stdout.write(candidate);
-    process.exit(0);
-  }
-}
-
-process.stdout.write(value);
-NODE
+  HOME_DIR="$HOME" node "$PATH_HELPER" expand-home "$1"
 }
 
 resolve_from_plugin_info() {
@@ -50,45 +17,7 @@ resolve_from_plugin_info() {
   plugin_info=$(openclaw plugins info vocechat 2>/dev/null || true)
   [ -n "$plugin_info" ] || return 1
 
-  plugin_dir=$(printf '%s' "$plugin_info" | node --input-type=commonjs -e '
-const fs = require("fs");
-const path = require("path");
-
-const raw = fs.readFileSync(0, "utf8");
-const lines = raw.split(/\r?\n/);
-
-function extract(prefix) {
-  for (const line of lines) {
-    if (line.startsWith(prefix)) {
-      const value = line.slice(prefix.length).trim();
-      if (value) return value;
-    }
-  }
-  return "";
-}
-
-const installPath = extract("Install path:");
-if (installPath) {
-  process.stdout.write(installPath);
-  process.exit(0);
-}
-
-const sourcePath = extract("Source path:");
-if (sourcePath) {
-  process.stdout.write(sourcePath);
-  process.exit(0);
-}
-
-const source = extract("Source:");
-if (!source) process.exit(0);
-
-if (/\.(?:[cm]?js|tsx?|jsx)$/i.test(source)) {
-  process.stdout.write(path.dirname(source));
-  process.exit(0);
-}
-
-process.stdout.write(source);
-')
+  plugin_dir=$(printf '%s' "$plugin_info" | HOME_DIR="$HOME" node "$PATH_HELPER" plugin-dir-from-info)
 
   [ -n "$plugin_dir" ] || return 1
   plugin_dir=$(expand_home "$plugin_dir")
