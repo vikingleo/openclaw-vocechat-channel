@@ -50,17 +50,41 @@ have_cmd() {
 }
 
 expand_home() {
-  case "$1" in
-    "~")
-      printf '%s\n' "$HOME"
-      ;;
-    "~/"*)
-      printf '%s/%s\n' "$HOME" "${1#~/}"
-      ;;
-    *)
-      printf '%s\n' "$1"
-      ;;
-  esac
+  HOME_DIR="$HOME" node --input-type=commonjs - "$1" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const home = String(process.env.HOME_DIR || process.env.HOME || "").trim();
+let value = String(process.argv[2] ?? "").trim();
+
+if (!value) {
+  process.stdout.write("");
+  process.exit(0);
+}
+
+if (value === "~") {
+  process.stdout.write(home);
+  process.exit(0);
+}
+
+if (value.startsWith("~/")) {
+  process.stdout.write(path.join(home, value.slice(2)));
+  process.exit(0);
+}
+
+const weirdMarker = `${path.sep}~${path.sep}`;
+const weirdIndex = value.indexOf(weirdMarker);
+if (weirdIndex >= 0) {
+  const suffix = value.slice(weirdIndex + 2).replace(new RegExp(`^\\${path.sep}+`), "");
+  const candidate = path.join(home, suffix);
+  if (!fs.existsSync(value) || value.startsWith(`${home}${path.sep}~${path.sep}`)) {
+    process.stdout.write(candidate);
+    process.exit(0);
+  }
+}
+
+process.stdout.write(value);
+NODE
 }
 
 resolve_config_path() {
