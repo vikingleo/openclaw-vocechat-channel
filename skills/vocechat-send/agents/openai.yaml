@@ -1,0 +1,4 @@
+interface:
+  display_name: "VoceChat 发送"
+  short_description: "向 VoceChat 发送文本或附件"
+  default_prompt: "Use $vocechat-send to send a message or file to a VoceChat user through the local OpenClaw plugin."

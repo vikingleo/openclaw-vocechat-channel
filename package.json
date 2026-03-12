@@ -15,6 +15,7 @@
     "README.md",
     "CHANGELOG.md",
     "config/**/*",
+    "skills/**/*",
     "scripts/**/*",
     "src/**/*"
   ],
@@ -25,7 +26,8 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "doctor": "sh scripts/doctor.sh"
   },
   "dependencies": {
     "undici": "^7.16.0"

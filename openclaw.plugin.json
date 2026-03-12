@@ -5,6 +5,9 @@
   "channels": [
     "vocechat"
   ],
+  "skills": [
+    "./skills"
+  ],
   "version": "0.4.8",
   "configSchema": {
     "type": "object",

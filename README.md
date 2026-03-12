@@ -93,6 +93,123 @@
 
 完整示例见：`config/plugin-config.example.json5`
 
+## 一键安装与卸载
+
+当前仓库现在提供专业化安装/卸载脚本：
+
+```bash
+chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
+./scripts/install.sh
+```
+
+卸载：
+
+```bash
+./scripts/uninstall.sh
+```
+
+安装脚本会处理：
+
+- 可选安装或升级本机 `vocechat-server`
+- 可选写入 `systemd` 服务单元并自动启动
+- 调用 `openclaw plugins install` 安装插件
+- 自动补装插件 runtime 依赖，避免 `Cannot find module undici`
+- 写入或更新 `channels.vocechat` 本地配置
+- 启用插件条目与 `vocechat-send` skill 条目
+- 将 `vocechat-send` 安装到 `~/.openclaw/skills/vocechat-send`
+- 可选自动重启 `openclaw gateway`
+
+常用安装示例：
+
+```bash
+./scripts/install.sh \
+  --base-url https://your-vocechat.example \
+  --api-key YOUR_VOCECHAT_API_KEY \
+  --default-to user:2 \
+  --admin-sender-ids telegram:123456789
+```
+
+同时安装本机 VoceChat 服务端，并从制品 URL 升级到你自己的二进制：
+
+```bash
+./scripts/install.sh \
+  --install-server \
+  --server-bin-url https://artifacts.example.com/vocechat/vocechat-server.bin \
+  --server-bin-sha256 YOUR_SHA256 \
+  --base-url http://127.0.0.1:3000
+```
+
+如果你已经有本地二进制文件：
+
+```bash
+./scripts/install.sh \
+  --install-server \
+  --server-bin /root/.openclaw/media/vocechat-server.bin \
+  --base-url http://127.0.0.1:3000
+```
+
+如果未提供 `--server-bin` 或 `--server-bin-url`，安装脚本会回退到官方 `sh.voce.chat` 的 zip 包。
+
+如果要使用 link 模式安装当前仓库：
+
+```bash
+./scripts/install.sh --link
+```
+
+健康检查：
+
+```bash
+./scripts/doctor.sh
+```
+
+卸载插件并移除 VoceChat 服务单元：
+
+```bash
+./scripts/uninstall.sh --uninstall-server
+```
+
+如果还要连数据目录一起删：
+
+```bash
+./scripts/uninstall.sh --uninstall-server --remove-server-data
+```
+
+### 是否能一键完全打通
+
+结论分两部分：
+
+- 对 OpenClaw 本地侧
+  - 可以基本一键完成：VoceChat 二进制安装、systemd 托管、插件安装、宿主配置、skill 安装、`undici` 依赖处理、gateway 重启都能脚本化
+- 对 VoceChat webhook 外部回调链路
+  - 不能仅靠本地脚本 100% 保证完全打通
+  - 原因是还依赖：
+    - OpenClaw 所在机器是否有可公网访问的 HTTPS 地址或反向代理
+    - VoceChat 服务端是否已把 webhook 指向该公开地址
+
+也就是说：
+
+- 纯出站（OpenClaw -> VoceChat 发消息/附件）可以一键配完
+- 入站 webhook（VoceChat -> OpenClaw）能把 OpenClaw 本地路由和鉴权一次配好
+- 但公网入口和 VoceChat 端 webhook 指向，仍然属于外部部署步骤
+
+还有一个现实限制：
+
+- 首次全新安装 VoceChat 服务端时，`Bot API Key` 往往要在 VoceChat 初始化完成后才能拿到
+- 因此 `install.sh` 在拿不到 `apiKey` 时，会先完成服务端 + 插件骨架安装，并把 `channels.vocechat.enabled` 保持为关闭
+- 拿到 `apiKey` 后，重新执行一次 `./scripts/install.sh --api-key ...` 即可补全出站配置
+
+### 关于二进制分发
+
+支持把 Docker 导出的 `vocechat-server.bin` 接到 `install.sh` 流程里，但不建议把该二进制直接提交到公开 GitHub 仓库：
+
+- 公开仓库存放二进制不利于版本治理和校验
+- 还会引入分发、许可和后续维护风险
+
+更稳妥的方式是：
+
+- 放到你自己的制品仓库、私有 Release 或对象存储
+- 用 `--server-bin-url` + `--server-bin-sha256` 安装
+
 ## 附件发送脚本
 
 仓库内提供了一个交互式脚本，可直接向指定 `VoceChat user` 发送附件：
@@ -143,6 +260,29 @@ chmod +x ./scripts/send-vocechat-attachment.sh
 - `node`
 - `curl`
 - `file`（可选，仅用于更准确识别附件 MIME）
+
+## OpenClaw Agent Skill
+
+插件现在内置了一个可给 OpenClaw agent 使用的 skill：
+
+- `skills/vocechat-send`
+
+它的用途是让 agent 直接向 VoceChat 发送文本或附件，而不是临时手写 `curl`。
+
+skill 的底层调用脚本是：
+
+```bash
+sh scripts/vocechat-send.sh --to user:2 --text "已处理完成"
+sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/report.pdf
+```
+
+安装脚本默认会把这个 skill 同步到：
+
+```bash
+~/.openclaw/skills/vocechat-send
+```
+
+这样 OpenClaw agent 可以把它当作 managed skill 直接发现和使用。
 
 ## 关键配置字段
 
