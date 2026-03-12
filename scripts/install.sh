@@ -1121,7 +1121,7 @@ if [ "$INBOUND_ENABLED" = "true" ]; then
   if [ -n "$WEBHOOK_URL" ]; then
     log "  webhook URL: $WEBHOOK_URL"
     if [ -n "$WEBHOOK_API_KEY" ]; then
-      log "  webhook 鉴权头: x-webhook-api-key: $WEBHOOK_API_KEY"
+      log "  webhook 鉴权头: x-api-key: $WEBHOOK_API_KEY"
     fi
     log "  说明: OpenClaw 侧已配置完成；仍需确保外部网络能访问该 URL，并在 VoceChat 服务端把 webhook 指向这里。"
   else
