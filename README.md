@@ -148,7 +148,15 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
   --base-url http://127.0.0.1:3000
 ```
 
-如果未提供 `--server-bin` 或 `--server-bin-url`，安装脚本会回退到官方 `sh.voce.chat` 的 zip 包。
+如果未提供 `--server-bin` 或 `--server-bin-url`：
+
+- 交互模式下，安装脚本会主动询问：
+  - 使用官方 `sh.voce.chat`
+  - 还是使用本地已下载的 `vocechat-server.bin`
+- 如果检测到当前机器已有 VoceChat 安装或数据目录，默认会引导你选择本地二进制，并对官方源额外做一次风险确认
+- 非交互模式下，若检测到已有安装/数据而你又没显式提供二进制来源，脚本会直接拒绝继续，避免把旧版官方二进制覆盖到已迁移的数据上
+
+只有在“全新空目录”场景下，未指定制品来源时才建议回退到官方 `sh.voce.chat` 的 zip 包。
 
 如果要使用 link 模式安装当前仓库：
 

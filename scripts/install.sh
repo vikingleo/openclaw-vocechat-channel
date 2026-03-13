@@ -50,6 +50,7 @@ CHANNEL_ENABLED="false"
 PLUGIN_INSTALL_PATH=""
 PLUGIN_ALREADY_PRESENT="false"
 OPENCLAW_BIN="${OPENCLAW_BIN:-}"
+SERVER_SOURCE_KIND=""
 
 cleanup() {
   if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
@@ -215,6 +216,103 @@ prompt_secret() {
   fi
   printf '\n' >&2
   printf '%s\n' "$answer"
+}
+
+dir_has_entries() {
+  dir_path=$1
+  [ -d "$dir_path" ] || return 1
+  find "$dir_path" -mindepth 1 -maxdepth 1 >/dev/null 2>&1 || return 1
+  first_entry=$(find "$dir_path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)
+  [ -n "$first_entry" ]
+}
+
+prepare_server_paths() {
+  SERVER_INSTALL_DIR_RESOLVED=$(expand_home "$SERVER_INSTALL_DIR")
+  if [ -n "$SERVER_DATA_DIR" ]; then
+    SERVER_DATA_DIR_RESOLVED=$(expand_home "$SERVER_DATA_DIR")
+  else
+    SERVER_DATA_DIR_RESOLVED="$SERVER_INSTALL_DIR_RESOLVED/data"
+  fi
+  SERVER_BINARY_TARGET="$SERVER_INSTALL_DIR_RESOLVED/vocechat-server"
+}
+
+has_existing_server_state() {
+  prepare_server_paths
+  [ -f "$SERVER_BINARY_TARGET" ] && return 0
+  [ -f "$SERVER_INSTALL_DIR_RESOLVED/config/config.toml" ] && return 0
+  dir_has_entries "$SERVER_DATA_DIR_RESOLVED" && return 0
+  return 1
+}
+
+prompt_server_source_if_needed() {
+  [ "$INSTALL_SERVER" = "true" ] || return 0
+  [ -n "$SERVER_BIN" ] && return 0
+  [ -n "$SERVER_BIN_URL" ] && return 0
+  [ -n "$SERVER_VERSION" ] && return 0
+  [ "$AUTO_CONFIRM" = "true" ] && return 0
+
+  if has_existing_server_state; then
+    warn "检测到当前机器已有 VoceChat 安装或数据目录；若继续走官方 sh.voce.chat 源，可能因版本过旧导致数据库 migration 不兼容"
+    default_choice="2"
+  else
+    default_choice="1"
+  fi
+
+  printf '%s\n' "VoceChat 服务端安装来源：" >&2
+  printf '%s\n' "  1) 官方 shell 源（sh.voce.chat）" >&2
+  printf '%s\n' "  2) 本地二进制文件路径（提前下载好的 vocechat-server.bin）" >&2
+
+  while :; do
+    choice=$(prompt "选择安装来源（1/2）" "$default_choice")
+    case "$choice" in
+      1)
+        SERVER_SOURCE_KIND="official"
+        if has_existing_server_state; then
+          warn "当前存在已有数据；官方源当前可能返回旧版二进制，存在把服务启动坏的风险"
+          confirm_official=$(prompt "确认继续使用官方源？输入 yes 继续" "no")
+          case "$confirm_official" in
+            yes|YES|y|Y)
+              return 0
+              ;;
+            *)
+              default_choice="2"
+              continue
+              ;;
+          esac
+        fi
+        return 0
+        ;;
+      2)
+        SERVER_SOURCE_KIND="local-bin"
+        while :; do
+          local_path=$(prompt "输入本地二进制文件路径")
+          [ -n "$local_path" ] || {
+            warn "本地二进制路径不能为空"
+            continue
+          }
+          local_path=$(expand_home "$local_path")
+          if [ -f "$local_path" ]; then
+            SERVER_BIN="$local_path"
+            return 0
+          fi
+          warn "未找到本地二进制文件: $local_path"
+        done
+        ;;
+      *)
+        warn "请输入 1 或 2"
+        ;;
+    esac
+  done
+}
+
+ensure_safe_server_source_selection() {
+  [ "$INSTALL_SERVER" = "true" ] || return 0
+  [ -n "$SERVER_BIN" ] && return 0
+  [ -n "$SERVER_BIN_URL" ] && return 0
+
+  if has_existing_server_state && [ -z "$SERVER_VERSION" ]; then
+    die "检测到当前机器已有 VoceChat 安装或数据目录。为避免官方 sh.voce.chat 的旧版二进制破坏现有数据库，请显式提供 --server-bin、--server-bin-url，或明确指定 --server-version"
+  fi
 }
 
 normalize_csv_list() {
@@ -896,6 +994,8 @@ if [ "$INSTALL_SERVER" = "true" ] && [ -z "$BASE_URL" ]; then
   BASE_URL="http://$SERVER_HOST:$SERVER_PORT"
 fi
 
+prompt_server_source_if_needed
+
 if [ "$AUTO_CONFIRM" != "true" ]; then
   [ -n "$BASE_URL" ] || BASE_URL=$(prompt "输入 VoceChat baseUrl" "$BASE_URL")
   if [ -n "$API_KEY" ]; then
@@ -940,6 +1040,8 @@ fi
 if [ "$INSTALL_SERVER" != "true" ] && [ "$CHANNEL_ENABLED" != "true" ]; then
   die "baseUrl 和 apiKey 不能为空"
 fi
+
+ensure_safe_server_source_selection
 
 PLUGIN_INSTALL_PATH=$(discover_plugin_install_path)
 if [ -n "$PLUGIN_INSTALL_PATH" ]; then
