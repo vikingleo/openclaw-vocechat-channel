@@ -5,16 +5,44 @@ set -eu
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 STATE_DIR="${OPENCLAW_STATE_DIR:-${CLAWDBOT_STATE_DIR:-$HOME/.openclaw}}"
 PATH_HELPER="$SKILL_DIR/lib/openclaw-path-utils.cjs"
+OPENCLAW_BIN="${OPENCLAW_BIN:-}"
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+find_openclaw_bin() {
+  if [ -n "${OPENCLAW_BIN:-}" ] && [ -x "$OPENCLAW_BIN" ]; then
+    printf '%s\n' "$OPENCLAW_BIN"
+    return 0
+  fi
+  if have_cmd openclaw; then
+    command -v openclaw
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.npm-global/bin/openclaw" \
+    "$HOME/.local/bin/openclaw" \
+    "/usr/local/bin/openclaw" \
+    "/usr/bin/openclaw"
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
 
 expand_home() {
   HOME_DIR="$HOME" node "$PATH_HELPER" expand-home "$1"
 }
 
 resolve_from_plugin_info() {
-  command -v openclaw >/dev/null 2>&1 || return 1
-  openclaw plugins info vocechat >/dev/null 2>&1 || return 1
+  OPENCLAW_RESOLVED_BIN=$(find_openclaw_bin) || return 1
+  "$OPENCLAW_RESOLVED_BIN" plugins info vocechat >/dev/null 2>&1 || return 1
 
-  plugin_info=$(openclaw plugins info vocechat 2>/dev/null || true)
+  plugin_info=$("$OPENCLAW_RESOLVED_BIN" plugins info vocechat 2>/dev/null || true)
   [ -n "$plugin_info" ] || return 1
 
   plugin_dir=$(printf '%s' "$plugin_info" | HOME_DIR="$HOME" node "$PATH_HELPER" plugin-dir-from-info)

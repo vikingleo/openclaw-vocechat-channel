@@ -18,6 +18,7 @@ SERVER_SERVICE_NAME="vocechat"
 SERVER_SERVICE_SCOPE="auto"
 SERVER_SERVICE_SCOPE_RESOLVED="none"
 SERVER_SERVICE_UNIT_PATH=""
+OPENCLAW_BIN="${OPENCLAW_BIN:-}"
 
 usage() {
   cat <<EOF
@@ -67,6 +68,29 @@ have_cmd() {
 
 require_cmd() {
   have_cmd "$1" || die "缺少依赖命令: $1"
+}
+
+find_openclaw_bin() {
+  if [ -n "${OPENCLAW_BIN:-}" ] && [ -x "$OPENCLAW_BIN" ]; then
+    printf '%s\n' "$OPENCLAW_BIN"
+    return 0
+  fi
+  if have_cmd openclaw; then
+    command -v openclaw
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.npm-global/bin/openclaw" \
+    "$HOME/.local/bin/openclaw" \
+    "/usr/local/bin/openclaw" \
+    "/usr/bin/openclaw"
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 expand_home() {
@@ -226,9 +250,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-require_cmd openclaw
 require_cmd node
 require_cmd cp
+OPENCLAW_BIN=$(find_openclaw_bin) || die "缺少依赖命令: openclaw（已检查 PATH、~/.npm-global/bin、~/.local/bin、/usr/local/bin、/usr/bin）"
 
 CONFIG_FILE=$(resolve_config_path)
 CONFIG_FILE=$(expand_home "$CONFIG_FILE")
@@ -280,9 +304,9 @@ if [ "$KEEP_FILES" = "true" ]; then
   UNINSTALL_ARGS="$UNINSTALL_ARGS --keep-files"
 fi
 
-if openclaw plugins info vocechat >/dev/null 2>&1; then
+if "$OPENCLAW_BIN" plugins info vocechat >/dev/null 2>&1; then
   # shellcheck disable=SC2086
-  openclaw plugins uninstall $UNINSTALL_ARGS
+  "$OPENCLAW_BIN" plugins uninstall $UNINSTALL_ARGS
 else
   log "插件当前未安装，跳过 openclaw plugins uninstall"
 fi
@@ -346,7 +370,7 @@ if [ "$UNINSTALL_SERVER" = "true" ]; then
 fi
 
 if [ "$SKIP_RESTART" != "true" ]; then
-  openclaw gateway restart
+  "$OPENCLAW_BIN" gateway restart
 fi
 
 log ""

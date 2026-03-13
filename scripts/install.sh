@@ -49,6 +49,7 @@ SERVER_SERVICE_ENABLED="false"
 CHANNEL_ENABLED="false"
 PLUGIN_INSTALL_PATH=""
 PLUGIN_ALREADY_PRESENT="false"
+OPENCLAW_BIN="${OPENCLAW_BIN:-}"
 
 cleanup() {
   if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
@@ -125,6 +126,29 @@ have_cmd() {
 
 require_cmd() {
   have_cmd "$1" || die "缺少依赖命令: $1"
+}
+
+find_openclaw_bin() {
+  if [ -n "${OPENCLAW_BIN:-}" ] && [ -x "$OPENCLAW_BIN" ]; then
+    printf '%s\n' "$OPENCLAW_BIN"
+    return 0
+  fi
+  if have_cmd openclaw; then
+    command -v openclaw
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.npm-global/bin/openclaw" \
+    "$HOME/.local/bin/openclaw" \
+    "/usr/local/bin/openclaw" \
+    "/usr/bin/openclaw"
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 expand_home() {
@@ -621,8 +645,8 @@ install_server_binary() {
 }
 
 discover_plugin_install_path() {
-  if openclaw plugins info vocechat >/dev/null 2>&1; then
-    plugin_info=$(openclaw plugins info vocechat 2>/dev/null || true)
+  if "$OPENCLAW_BIN" plugins info vocechat >/dev/null 2>&1; then
+    plugin_info=$("$OPENCLAW_BIN" plugins info vocechat 2>/dev/null || true)
     printf '%s' "$plugin_info" | HOME_DIR="$HOME" node "$PATH_HELPER" plugin-dir-from-info
     return
   fi
@@ -815,11 +839,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-require_cmd openclaw
 require_cmd node
 require_cmd cp
 require_cmd mkdir
 require_cmd mktemp
+
+OPENCLAW_BIN=$(find_openclaw_bin) || die "缺少依赖命令: openclaw（已检查 PATH、~/.npm-global/bin、~/.local/bin、/usr/local/bin、/usr/bin）"
 
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vocechat-install.XXXXXX")
 CONFIG_FILE=$(resolve_config_path)
@@ -962,9 +987,9 @@ fi
 
 if [ "$PLUGIN_ALREADY_PRESENT" != "true" ]; then
   if [ "$LINK_MODE" = "true" ]; then
-    openclaw plugins install -l "$REPO_DIR"
+    "$OPENCLAW_BIN" plugins install -l "$REPO_DIR"
   else
-    openclaw plugins install "$REPO_DIR"
+    "$OPENCLAW_BIN" plugins install "$REPO_DIR"
   fi
 else
   if [ -n "$PLUGIN_INSTALL_PATH" ]; then
@@ -1073,11 +1098,11 @@ elif [ "$SKILL_SCOPE" != "none" ]; then
 fi
 
 if [ "$SKIP_RESTART" != "true" ]; then
-  openclaw gateway restart
+  "$OPENCLAW_BIN" gateway restart
 fi
 
 SKILL_READY="unknown"
-if openclaw skills info vocechat-send >/dev/null 2>&1; then
+if "$OPENCLAW_BIN" skills info vocechat-send >/dev/null 2>&1; then
   SKILL_READY="yes"
 else
   SKILL_READY="no"

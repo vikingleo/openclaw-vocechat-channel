@@ -14,6 +14,7 @@ SERVER_SERVICE_SCOPE="auto"
 SERVER_SERVICE_SCOPE_RESOLVED="none"
 FAIL_COUNT=0
 WARN_COUNT=0
+OPENCLAW_BIN="${OPENCLAW_BIN:-}"
 
 usage() {
   cat <<EOF
@@ -51,6 +52,29 @@ fail() {
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+find_openclaw_bin() {
+  if [ -n "${OPENCLAW_BIN:-}" ] && [ -x "$OPENCLAW_BIN" ]; then
+    printf '%s\n' "$OPENCLAW_BIN"
+    return 0
+  fi
+  if have_cmd openclaw; then
+    command -v openclaw
+    return 0
+  fi
+  for candidate in \
+    "$HOME/.npm-global/bin/openclaw" \
+    "$HOME/.local/bin/openclaw" \
+    "/usr/local/bin/openclaw" \
+    "/usr/bin/openclaw"
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 expand_home() {
@@ -169,10 +193,12 @@ printf '  server install dir: %s\n' "$SERVER_INSTALL_DIR_RESOLVED"
 printf '  server service: %s (%s)\n' "$SERVER_SERVICE_NAME" "$SERVER_SERVICE_SCOPE_RESOLVED"
 printf '\n'
 
-if have_cmd openclaw; then
-  ok "openclaw 命令可用"
+OPENCLAW_BIN=$(find_openclaw_bin || true)
+
+if [ -n "$OPENCLAW_BIN" ]; then
+  ok "openclaw 命令可用: $OPENCLAW_BIN"
 else
-  fail "缺少 openclaw 命令"
+  fail "缺少 openclaw 命令（已检查 PATH、~/.npm-global/bin、~/.local/bin、/usr/local/bin、/usr/bin）"
 fi
 
 if have_cmd node; then
@@ -284,9 +310,9 @@ EOF
 esac
 
 PLUGIN_INFO=""
-if have_cmd openclaw && openclaw plugins info vocechat >/dev/null 2>&1; then
+if [ -n "$OPENCLAW_BIN" ] && "$OPENCLAW_BIN" plugins info vocechat >/dev/null 2>&1; then
   ok "VoceChat 插件已安装"
-  PLUGIN_INFO=$(openclaw plugins info vocechat 2>/dev/null)
+  PLUGIN_INFO=$("$OPENCLAW_BIN" plugins info vocechat 2>/dev/null)
   PLUGIN_INSTALL_PATH=$(printf '%s' "$PLUGIN_INFO" | HOME_DIR="$HOME" node "$PATH_HELPER" plugin-dir-from-info)
   if [ -n "$PLUGIN_INSTALL_PATH" ]; then
     ok "VoceChat 插件安装目录可解析"
@@ -311,7 +337,7 @@ else
   fail "VoceChat 插件未安装"
 fi
 
-if have_cmd openclaw && openclaw skills info vocechat-send >/dev/null 2>&1; then
+if [ -n "$OPENCLAW_BIN" ] && "$OPENCLAW_BIN" skills info vocechat-send >/dev/null 2>&1; then
   ok "vocechat-send skill 已注册"
 else
   warn "vocechat-send skill 未注册"
