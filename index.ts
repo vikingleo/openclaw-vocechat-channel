@@ -40,6 +40,31 @@ const DEFAULT_WEBHOOK_PATH = "/vocechat/webhook";
 const DEFAULT_INBOUND_ACK_TEXT = "已收到，正在处理中...";
 const DEFAULT_INBOUND_BLOCKED_TYPES = ["system", "event", "notice", "typing", "status", "reaction", "like"];
 const RECENT_MESSAGE_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_INBOUND_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
+const MAX_INBOUND_IMAGE_ATTACHMENTS = 8;
+const INBOUND_IMAGE_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".heic",
+  ".heif",
+]);
+const ALLOWED_INBOUND_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/tiff",
+  "image/heic",
+  "image/heif",
+]);
+const IMAGE_TYPE_KEYWORDS = new Set(["image", "img", "photo", "picture", "pic", "snapshot"]);
 
 type InboundParseMode = "legacy" | "balanced" | "strict";
 
@@ -120,6 +145,19 @@ type VoceChatHttpResponse = {
   body: string;
 };
 
+type InboundAttachment = {
+  kind: "image";
+  messageId: string;
+  source: string;
+  attachmentId?: string;
+  url?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  localFile?: string;
+  downloadError?: string;
+};
+
 type InboundEvent = {
   messageId: string;
   fromUid: string;
@@ -127,8 +165,12 @@ type InboundEvent = {
   conversationId: string;
   groupId?: string;
   text: string;
+  originalText: string;
   timestamp: number;
   replyTarget: string;
+  attachments: InboundAttachment[];
+  imageUrls: string[];
+  localFiles: string[];
 };
 
 let runtimeRef: PluginRuntime | null = null;
@@ -230,11 +272,15 @@ function summarizeInboundPayloadForAudit(raw: unknown, accountId: string): strin
 
   const topKeys = Object.keys(payload).join(",");
   const detailKeys = Object.keys(detail).join(",");
+  const attachmentKeys = Object.keys({ ...payload, ...detail }).filter((key) =>
+    /(attachment|file|media|image|photo|picture|pic)/i.test(key),
+  );
 
   return [
     `account=${clipAuditSegment(accountId)}`,
     `types=${clipAuditSegment(uniqueTypes.join("|"))}`,
     `hasTextField=${hasTextField ? "yes" : "no"}`,
+    `attachmentKeys=${clipAuditSegment(attachmentKeys.join("|"))}`,
     `topKeys=${clipAuditSegment(topKeys)}`,
     `detailKeys=${clipAuditSegment(detailKeys)}`,
   ].join(" ");
@@ -304,6 +350,438 @@ function parseInboundTypeEntries(value: unknown): string[] {
 
 function normalizeInboundText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function normalizeMimeType(value: unknown): string {
+  return normalizeString(value).toLowerCase().split(";")[0]?.trim() || "";
+}
+
+function parseOptionalSize(value: unknown): number | undefined {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return undefined;
+  return Math.trunc(numeric);
+}
+
+function isAllowedInboundImageMimeType(value: unknown): boolean {
+  const normalized = normalizeMimeType(value);
+  if (!normalized) return false;
+  return ALLOWED_INBOUND_IMAGE_MIME_TYPES.has(normalized);
+}
+
+function inferMimeTypeFromExtension(ext: string): string | undefined {
+  switch (ext.toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".tif":
+    case ".tiff":
+      return "image/tiff";
+    case ".heic":
+      return "image/heic";
+    case ".heif":
+      return "image/heif";
+    default:
+      return undefined;
+  }
+}
+
+function inferExtensionFromMimeType(mimeType: string): string {
+  switch (normalizeMimeType(mimeType)) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/gif":
+      return ".gif";
+    case "image/webp":
+      return ".webp";
+    case "image/bmp":
+      return ".bmp";
+    case "image/tiff":
+      return ".tif";
+    case "image/heic":
+      return ".heic";
+    case "image/heif":
+      return ".heif";
+    default:
+      return "";
+  }
+}
+
+function sanitizePathSegment(input: string, fallback: string, maxLength = 120): string {
+  const raw = input.trim().replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").replace(/\s+/g, " ");
+  const normalized = raw.replace(/\.+$/g, "").trim();
+  if (!normalized || normalized === "." || normalized === "..") return fallback;
+  if (normalized.length <= maxLength) return normalized;
+  return normalized.slice(0, maxLength);
+}
+
+function sanitizeFileName(input: string, fallback = "attachment"): string {
+  return sanitizePathSegment(path.basename(input), fallback);
+}
+
+function isImageExtension(ext: string): boolean {
+  return INBOUND_IMAGE_EXTENSIONS.has(ext.toLowerCase());
+}
+
+function extractExtensionFromPathLike(value: string): string {
+  const normalized = normalizeString(value);
+  if (!normalized) return "";
+  try {
+    const parsed = normalized.includes("://") ? new URL(normalized) : new URL(normalized, "https://vocechat.local");
+    return path.extname(parsed.pathname || "");
+  } catch {
+    return path.extname(normalized.split("?")[0] || "");
+  }
+}
+
+function isLikelyVoceChatStoredFilePath(value: unknown): boolean {
+  const normalized = normalizeString(value);
+  if (!normalized) return false;
+  if (normalized.includes("?") || normalized.includes("#")) return false;
+  if (normalized.startsWith("/")) return false;
+  return /^\d{4}\/\d{1,2}\/\d{1,2}\/[A-Za-z0-9][A-Za-z0-9-]{15,}$/.test(normalized);
+}
+
+function isLikelyImageReference(value: unknown): boolean {
+  const normalized = normalizeString(value);
+  if (!normalized) return false;
+  const ext = extractExtensionFromPathLike(normalized);
+  if (isImageExtension(ext)) return true;
+  return /\/image(s)?\//i.test(normalized);
+}
+
+function isImageTypeKeyword(value: unknown): boolean {
+  const normalized = normalizeInboundType(value);
+  if (!normalized) return false;
+  if (IMAGE_TYPE_KEYWORDS.has(normalized)) return true;
+  return normalized.startsWith("image") || normalized.startsWith("photo") || normalized.startsWith("picture");
+}
+
+function resolveInboundMediaUrl(account: ResolvedAccount, rawUrl: string): string {
+  const normalized = normalizeString(rawUrl);
+  if (!normalized) return "";
+  if (isLikelyVoceChatStoredFilePath(normalized)) {
+    if (!account.baseUrl) return normalized;
+    return `${account.baseUrl}/api/resource/file?file_path=${encodeURIComponent(normalized)}`;
+  }
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+  if (normalized.startsWith("//")) {
+    try {
+      return new URL(account.baseUrl).protocol + normalized;
+    } catch {
+      return `https:${normalized}`;
+    }
+  }
+  if (!account.baseUrl) return normalized;
+  if (normalized.startsWith("/")) return `${account.baseUrl}${normalized}`;
+  return `${account.baseUrl}/${normalized.replace(/^\.?\//, "")}`;
+}
+
+function extractImageReferencesFromText(raw: string): string[] {
+  const normalized = normalizeString(raw);
+  if (!normalized) return [];
+
+  const matches = new Set<string>();
+  const markdownImage = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  const htmlImage = /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
+  const bareRef = /(?:https?:\/\/|\/)[^\s<>()]+/g;
+
+  for (const match of normalized.matchAll(markdownImage)) {
+    const candidate = normalizeString(match[1]);
+    if (candidate && isLikelyImageReference(candidate)) matches.add(candidate);
+  }
+  for (const match of normalized.matchAll(htmlImage)) {
+    const candidate = normalizeString(match[1]);
+    if (candidate && isLikelyImageReference(candidate)) matches.add(candidate);
+  }
+  for (const match of normalized.matchAll(bareRef)) {
+    const candidate = normalizeString(match[0]);
+    if (candidate && isLikelyImageReference(candidate)) matches.add(candidate);
+  }
+
+  return [...matches];
+}
+
+function stripImageReferencesFromText(raw: string): string {
+  if (!raw) return "";
+  return normalizeInboundText(
+    raw
+      .replace(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, " ")
+      .replace(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi, " ")
+      .replace(/\b\d{4}\/\d{1,2}\/\d{1,2}\/[A-Za-z0-9][A-Za-z0-9-]{15,}\b/g, " ")
+      .replace(/(?:https?:\/\/|\/)[^\s<>()]+/g, (segment) => (isLikelyImageReference(segment) ? " " : segment)),
+  );
+}
+
+function dedupeInboundAttachments(attachments: InboundAttachment[]): InboundAttachment[] {
+  const seen = new Set<string>();
+  const deduped: InboundAttachment[] = [];
+
+  for (const attachment of attachments) {
+    const key = [
+      attachment.attachmentId || "-",
+      attachment.url || "-",
+      attachment.fileName || "-",
+      attachment.mimeType || "-",
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(attachment);
+    if (deduped.length >= MAX_INBOUND_IMAGE_ATTACHMENTS) break;
+  }
+
+  return deduped;
+}
+
+function collectInboundAttachmentCandidates(
+  value: unknown,
+  source: string,
+  results: Array<{ source: string; value: unknown }>,
+  depth = 0,
+): void {
+  if (value === undefined || value === null || depth > 3) return;
+
+  if (Array.isArray(value)) {
+    for (const entry of value) collectInboundAttachmentCandidates(entry, source, results, depth + 1);
+    return;
+  }
+
+  if (typeof value === "string") {
+    const refs = extractImageReferencesFromText(value);
+    if (refs.length === 0 && !isLikelyImageReference(value)) return;
+    if (refs.length === 0) {
+      results.push({ source, value });
+      return;
+    }
+    for (const ref of refs) results.push({ source: `${source}.text`, value: ref });
+    return;
+  }
+
+  if (typeof value !== "object") return;
+
+  results.push({ source, value });
+  const record = value as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(record)) {
+    if (!/(attachment|file|media|image|photo|picture|pic|preview|url|path)/i.test(key)) continue;
+    collectInboundAttachmentCandidates(entry, `${source}.${key}`, results, depth + 1);
+  }
+}
+
+function parseInboundAttachmentCandidate(params: {
+  value: unknown;
+  source: string;
+  messageId: string;
+  account: ResolvedAccount;
+}): InboundAttachment[] {
+  const { value, source, messageId, account } = params;
+
+  if (typeof value === "string") {
+    const refs = extractImageReferencesFromText(value);
+    const candidates = refs.length > 0 ? refs : [value];
+    return candidates
+      .map((candidate) => resolveInboundMediaUrl(account, candidate))
+      .filter((candidate) => isLikelyImageReference(candidate))
+      .map((candidate) => ({
+        kind: "image" as const,
+        messageId,
+        source,
+        url: candidate,
+      }));
+  }
+
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return [];
+  const properties = asRecord(record.properties);
+
+  const nestedCandidates: InboundAttachment[] = [];
+  for (const key of ["attachment", "attachments", "file", "files", "image", "images", "media", "medias"]) {
+    if (!hasOwn(record, key)) continue;
+    const nested: Array<{ source: string; value: unknown }> = [];
+    collectInboundAttachmentCandidates(record[key], `${source}.${key}`, nested, 1);
+    for (const candidate of nested) {
+      nestedCandidates.push(
+        ...parseInboundAttachmentCandidate({
+          value: candidate.value,
+          source: candidate.source,
+          messageId,
+          account,
+        }),
+      );
+    }
+  }
+  if (nestedCandidates.length > 0) return nestedCandidates;
+
+  const mimeType = normalizeMimeType(
+    firstNonEmptyString([
+      record.mime,
+      record.mime_type,
+      record.mimeType,
+      record.content_type,
+      record.contentType,
+      record.file_type,
+      record.fileType,
+      properties.mime,
+      properties.mime_type,
+      properties.mimeType,
+      properties.content_type,
+      properties.contentType,
+      properties.file_type,
+      properties.fileType,
+    ]),
+  );
+  const fileName = firstNonEmptyString([
+    record.file_name,
+    record.fileName,
+    record.filename,
+    record.name,
+    record.title,
+    properties.file_name,
+    properties.fileName,
+    properties.filename,
+    properties.name,
+    properties.title,
+  ]);
+  const rawUrl = firstNonEmptyString([
+    record.url,
+    record.src,
+    record.href,
+    record.path,
+    record.file_path,
+    record.filePath,
+    record.download_url,
+    record.downloadUrl,
+    record.image_url,
+    record.imageUrl,
+    record.preview_url,
+    record.previewUrl,
+    record.content,
+    properties.url,
+    properties.src,
+    properties.href,
+    properties.path,
+    properties.file_path,
+    properties.filePath,
+    properties.download_url,
+    properties.downloadUrl,
+    properties.image_url,
+    properties.imageUrl,
+    properties.preview_url,
+    properties.previewUrl,
+  ]);
+  const url = rawUrl ? resolveInboundMediaUrl(account, rawUrl) : "";
+  const attachmentId = firstNonEmptyId([
+    record.attachment_id,
+    record.attachmentId,
+    record.file_id,
+    record.fileId,
+    record.image_id,
+    record.imageId,
+    record.id,
+    properties.attachment_id,
+    properties.attachmentId,
+    properties.file_id,
+    properties.fileId,
+    properties.image_id,
+    properties.imageId,
+    properties.id,
+  ]);
+  if (!url && !attachmentId) return [];
+  const sizeBytes =
+    parseOptionalSize(record.size) ??
+    parseOptionalSize(record.file_size) ??
+    parseOptionalSize(record.fileSize) ??
+    parseOptionalSize(record.bytes) ??
+    parseOptionalSize(properties.size) ??
+    parseOptionalSize(properties.file_size) ??
+    parseOptionalSize(properties.fileSize) ??
+    parseOptionalSize(properties.bytes);
+  const looksLikeImage =
+    isAllowedInboundImageMimeType(mimeType) ||
+    isImageTypeKeyword(record.type) ||
+    isImageTypeKeyword(record.message_type) ||
+    isImageTypeKeyword(record.kind) ||
+    isImageTypeKeyword(record.content_type) ||
+    isImageTypeKeyword(properties.type) ||
+    isImageTypeKeyword(properties.message_type) ||
+    isImageTypeKeyword(properties.kind) ||
+    isImageTypeKeyword(properties.content_type) ||
+    isLikelyImageReference(url) ||
+    isLikelyImageReference(fileName);
+
+  if (!looksLikeImage) return [];
+
+  return [
+    {
+      kind: "image",
+      messageId,
+      source,
+      attachmentId: attachmentId || undefined,
+      url: url || undefined,
+      fileName: fileName || undefined,
+      mimeType: mimeType || undefined,
+      sizeBytes,
+    },
+  ];
+}
+
+function extractInboundAttachments(raw: unknown, messageId: string, account: ResolvedAccount): InboundAttachment[] {
+  const payload = asRecord(raw);
+  const detail = asRecord(payload.detail);
+  const candidates: Array<{ source: string; value: unknown }> = [];
+
+  const roots: Array<{ label: string; value: unknown }> = [
+    { label: "payload", value: payload },
+    { label: "detail", value: detail },
+    { label: "payload", value: payload.attachments },
+    { label: "payload", value: payload.attachment },
+    { label: "payload", value: payload.files },
+    { label: "payload", value: payload.file },
+    { label: "payload", value: payload.media },
+    { label: "payload", value: payload.medias },
+    { label: "payload", value: payload.images },
+    { label: "payload", value: payload.image },
+    { label: "payload", value: payload.imageUrls },
+    { label: "payload", value: payload.image_urls },
+    { label: "payload", value: payload.properties },
+    { label: "payload", value: payload.content },
+    { label: "payload", value: payload.preview },
+    { label: "detail", value: detail.attachments },
+    { label: "detail", value: detail.attachment },
+    { label: "detail", value: detail.files },
+    { label: "detail", value: detail.file },
+    { label: "detail", value: detail.media },
+    { label: "detail", value: detail.medias },
+    { label: "detail", value: detail.images },
+    { label: "detail", value: detail.image },
+    { label: "detail", value: detail.imageUrls },
+    { label: "detail", value: detail.image_urls },
+    { label: "detail", value: detail.properties },
+    { label: "detail", value: detail.content },
+    { label: "detail", value: detail.preview },
+  ];
+
+  for (const root of roots) {
+    collectInboundAttachmentCandidates(root.value, root.label, candidates);
+  }
+
+  const parsed = candidates.flatMap((candidate) =>
+    parseInboundAttachmentCandidate({
+      value: candidate.value,
+      source: candidate.source,
+      messageId,
+      account,
+    }),
+  );
+  return dedupeInboundAttachments(parsed);
 }
 
 function normalizeWebhookPath(value: unknown): string {
@@ -475,6 +953,440 @@ function expandHomePath(value: string): string {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
   return value;
+}
+
+function resolveOpenClawStateDir(): string {
+  const explicitStateDir = normalizeString(process.env.OPENCLAW_STATE_DIR ?? process.env.CLAWDBOT_STATE_DIR);
+  return explicitStateDir ? expandHomePath(explicitStateDir) : path.join(os.homedir(), ".openclaw");
+}
+
+function resolveInboundMediaRootDir(): string {
+  // Keep inbound media inside the OpenClaw workspace so built-in file tools can read it.
+  return path.join(resolveOpenClawStateDir(), "workspace", "media", "inbound", "vocechat");
+}
+
+function formatInboundDatePath(timestamp: number): string[] {
+  const date = new Date(timestamp || Date.now());
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return [year, month, day];
+}
+
+function buildInboundMediaMessageDir(event: InboundEvent): string {
+  return path.join(
+    resolveInboundMediaRootDir(),
+    ...formatInboundDatePath(event.timestamp),
+    sanitizePathSegment(event.messageId, "message"),
+  );
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readWebStreamWithLimit(stream: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<Buffer> {
+  if (!stream) return Buffer.alloc(0);
+
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+    if (total > maxBytes) {
+      await reader.cancel("too_large");
+      throw new Error(`attachment exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(chunk);
+  }
+
+  return Buffer.concat(chunks);
+}
+
+async function requestBinaryViaFetch(params: {
+  url: string;
+  headers: Record<string, string>;
+  signal: AbortSignal;
+  maxBytes: number;
+}): Promise<{ status: number; ok: boolean; body: Buffer; contentType: string; contentLength?: number }> {
+  const response = await fetch(params.url, {
+    method: "GET",
+    headers: params.headers,
+    signal: params.signal,
+  });
+  const contentType = normalizeMimeType(response.headers.get("content-type"));
+  const contentLength = parseOptionalSize(response.headers.get("content-length"));
+  if (contentLength !== undefined && contentLength > params.maxBytes) {
+    throw new Error(`attachment exceeds ${params.maxBytes} bytes`);
+  }
+  const body = await readWebStreamWithLimit(response.body, params.maxBytes);
+  return {
+    status: response.status,
+    ok: response.ok,
+    body,
+    contentType,
+    contentLength,
+  };
+}
+
+async function requestBinaryViaLoopback(params: {
+  url: string;
+  headers: Record<string, string>;
+  signal: AbortSignal;
+  maxBytes: number;
+}): Promise<{ status: number; ok: boolean; body: Buffer; contentType: string; contentLength?: number }> {
+  const parsed = new URL(params.url);
+  const isHttps = parsed.protocol === "https:";
+  const transport = isHttps ? https : http;
+  const port = Number(parsed.port || (isHttps ? 443 : 80));
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      params.signal.removeEventListener("abort", handleAbort);
+      callback();
+    };
+
+    const handleAbort = () => {
+      const abortError = createAbortError();
+      request.destroy(abortError);
+      finish(() => reject(abortError));
+    };
+
+    const request = transport.request(
+      {
+        protocol: parsed.protocol,
+        hostname: "127.0.0.1",
+        port,
+        method: "GET",
+        path: `${parsed.pathname}${parsed.search}`,
+        headers: {
+          ...params.headers,
+          host: parsed.host,
+        },
+        servername: isHttps ? parsed.hostname : undefined,
+        rejectUnauthorized: isHttps ? true : undefined,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        const contentType = normalizeMimeType(response.headers["content-type"]);
+        const contentLength = parseOptionalSize(response.headers["content-length"]);
+        if (contentLength !== undefined && contentLength > params.maxBytes) {
+          request.destroy(new Error(`attachment exceeds ${params.maxBytes} bytes`));
+          return;
+        }
+
+        response.on("data", (chunk) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buffer.length;
+          if (total > params.maxBytes) {
+            request.destroy(new Error(`attachment exceeds ${params.maxBytes} bytes`));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.on("end", () => {
+          const body = Buffer.concat(chunks);
+          finish(() =>
+            resolve({
+              status: response.statusCode ?? 0,
+              ok: Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300),
+              body,
+              contentType,
+              contentLength,
+            }),
+          );
+        });
+      },
+    );
+
+    request.on("error", (error) => {
+      finish(() => reject(error));
+    });
+
+    if (params.signal.aborted) {
+      handleAbort();
+      return;
+    }
+
+    params.signal.addEventListener("abort", handleAbort, { once: true });
+    request.end();
+  });
+}
+
+async function requestInboundBinaryResource(params: {
+  url: string;
+  headers: Record<string, string>;
+  signal: AbortSignal;
+  maxBytes: number;
+}): Promise<{ status: number; ok: boolean; body: Buffer; contentType: string; contentLength?: number }> {
+  if (canUseLoopbackFallback(params.url)) {
+    try {
+      return await requestBinaryViaLoopback(params);
+    } catch (loopbackError) {
+      const loopbackDetail = loopbackError instanceof Error ? loopbackError.message : String(loopbackError);
+      try {
+        return await requestBinaryViaFetch(params);
+      } catch (fetchError) {
+        const fetchDetail = fetchError instanceof Error ? fetchError.message : String(fetchError);
+        throw new Error(
+          `[vocechat] attachment request failed via loopback (${loopbackDetail}); configured host fallback failed (${fetchDetail})`,
+        );
+      }
+    }
+  }
+
+  try {
+    return await requestBinaryViaFetch(params);
+  } catch (originalError) {
+    if (!canUseLoopbackFallback(params.url)) throw originalError;
+
+    try {
+      return await requestBinaryViaLoopback(params);
+    } catch (fallbackError) {
+      const primaryDetail = originalError instanceof Error ? originalError.message : String(originalError);
+      const fallbackDetail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(
+        `[vocechat] attachment request failed via configured host (${primaryDetail}); loopback fallback failed (${fallbackDetail})`,
+      );
+    }
+  }
+}
+
+function inferInboundAttachmentFileName(attachment: InboundAttachment, contentType?: string): string {
+  const fallbackExt =
+    extractExtensionFromPathLike(attachment.fileName || "") ||
+    extractExtensionFromPathLike(attachment.url || "") ||
+    inferExtensionFromMimeType(contentType || attachment.mimeType || "") ||
+    ".bin";
+  const baseName = sanitizeFileName(attachment.fileName || path.basename(attachment.url || "") || "attachment");
+  const parsed = path.parse(baseName);
+  const ext = isImageExtension(parsed.ext || fallbackExt) ? parsed.ext || fallbackExt : fallbackExt;
+  const name = sanitizePathSegment(parsed.name || "attachment", "attachment");
+  return `${name}${ext}`;
+}
+
+function buildInboundAttachmentSignature(attachments: InboundAttachment[]): string {
+  return attachments
+    .map((attachment) =>
+      [
+        attachment.attachmentId || "-",
+        attachment.url || "-",
+        attachment.fileName || "-",
+        attachment.mimeType || "-",
+        attachment.sizeBytes ?? "-",
+      ].join("|"),
+    )
+    .join("||");
+}
+
+async function hydrateInboundAttachments(params: {
+  event: InboundEvent;
+  account: ResolvedAccount;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): Promise<InboundEvent> {
+  const { event, account, logger } = params;
+  if (event.attachments.length === 0) return event;
+
+  const messageDir = buildInboundMediaMessageDir(event);
+  const manifestPath = path.join(messageDir, "manifest.json");
+  const attachmentSignature = buildInboundAttachmentSignature(event.attachments);
+
+  try {
+    const manifestRaw = await fs.readFile(manifestPath, "utf8");
+    const manifest = asRecord(JSON.parse(manifestRaw));
+    const manifestSignature = normalizeString(manifest.signature);
+    const manifestFiles = Array.isArray(manifest.attachments) ? manifest.attachments : [];
+    if (manifestSignature === attachmentSignature && manifestFiles.length === event.attachments.length) {
+      const reusedAttachments: InboundAttachment[] = [];
+      let allFilesExist = true;
+      for (let index = 0; index < manifestFiles.length; index += 1) {
+        const saved = asRecord(manifestFiles[index]);
+        const localFile = normalizeString(saved.localFile);
+        if (!localFile || !(await fileExists(localFile))) {
+          allFilesExist = false;
+          break;
+        }
+        reusedAttachments.push({
+          ...event.attachments[index],
+          localFile,
+          mimeType: normalizeMimeType(saved.mimeType) || event.attachments[index]?.mimeType,
+          fileName: normalizeString(saved.fileName) || event.attachments[index]?.fileName,
+          sizeBytes: parseOptionalSize(saved.sizeBytes) ?? event.attachments[index]?.sizeBytes,
+        });
+      }
+      if (allFilesExist) {
+        logger?.info?.(
+          `[vocechat] inbound attachments reused account=${account.accountId} mid=${event.messageId} count=${reusedAttachments.length} dir=${messageDir}`,
+        );
+        return {
+          ...event,
+          attachments: reusedAttachments,
+          imageUrls: reusedAttachments.map((attachment) => attachment.url).filter(Boolean) as string[],
+          localFiles: reusedAttachments.map((attachment) => attachment.localFile).filter(Boolean) as string[],
+        };
+      }
+    }
+  } catch {
+    // Ignore missing or invalid manifest and re-download.
+  }
+
+  await fs.mkdir(messageDir, { recursive: true });
+  const hydratedAttachments: InboundAttachment[] = [];
+  const manifestAttachments: Array<Record<string, unknown>> = [];
+
+  for (let index = 0; index < event.attachments.length; index += 1) {
+    const attachment = event.attachments[index];
+    const url = normalizeString(attachment.url);
+    if (!url) {
+      const downloadError = "missing_attachment_url";
+      hydratedAttachments.push({ ...attachment, downloadError });
+      logger?.warn?.(
+        `[vocechat] inbound attachment skipped account=${account.accountId} mid=${event.messageId} index=${index} reason=${downloadError}`,
+      );
+      manifestAttachments.push({
+        ...attachment,
+        downloadError,
+      });
+      continue;
+    }
+
+    if (attachment.sizeBytes !== undefined && attachment.sizeBytes > DEFAULT_INBOUND_MEDIA_MAX_BYTES) {
+      const downloadError = `attachment exceeds ${DEFAULT_INBOUND_MEDIA_MAX_BYTES} bytes`;
+      hydratedAttachments.push({ ...attachment, downloadError });
+      logger?.warn?.(
+        `[vocechat] inbound attachment rejected account=${account.accountId} mid=${event.messageId} index=${index} reason=${clipAuditSegment(downloadError)}`,
+      );
+      manifestAttachments.push({
+        ...attachment,
+        downloadError,
+      });
+      continue;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), account.timeoutMs);
+    try {
+      const response = await requestInboundBinaryResource({
+        url,
+        headers: {
+          "x-api-key": account.apiKey,
+          accept: "image/*, application/octet-stream;q=0.8, */*;q=0.5",
+        },
+        signal: controller.signal,
+        maxBytes: DEFAULT_INBOUND_MEDIA_MAX_BYTES,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const resolvedMimeType = normalizeMimeType(response.contentType || attachment.mimeType);
+      const resolvedFileName = inferInboundAttachmentFileName(attachment, resolvedMimeType);
+      const resolvedExtension = extractExtensionFromPathLike(resolvedFileName) || inferExtensionFromMimeType(resolvedMimeType);
+      const inferredMimeType = resolvedMimeType || inferMimeTypeFromExtension(resolvedExtension) || "";
+      if (!isAllowedInboundImageMimeType(inferredMimeType) && !isImageExtension(resolvedExtension)) {
+        throw new Error(`unsupported_mime:${resolvedMimeType || "unknown"}`);
+      }
+
+      const targetPath = path.join(messageDir, `${String(index + 1).padStart(2, "0")}-${randomUUID()}${resolvedExtension || ".bin"}`);
+      await fs.writeFile(targetPath, response.body);
+
+      const hydratedAttachment: InboundAttachment = {
+        ...attachment,
+        fileName: resolvedFileName,
+        mimeType: inferredMimeType || attachment.mimeType,
+        sizeBytes: response.body.length,
+        localFile: targetPath,
+        downloadError: undefined,
+      };
+      hydratedAttachments.push(hydratedAttachment);
+      manifestAttachments.push({
+        ...hydratedAttachment,
+      });
+      logger?.info?.(
+        `[vocechat] inbound attachment stored account=${account.accountId} mid=${event.messageId} index=${index} path=${targetPath} size=${response.body.length} mime=${clipAuditSegment(hydratedAttachment.mimeType || "-")}`,
+      );
+    } catch (error) {
+      const downloadError = error instanceof Error ? error.message : String(error);
+      hydratedAttachments.push({ ...attachment, downloadError });
+      manifestAttachments.push({
+        ...attachment,
+        downloadError,
+      });
+      logger?.warn?.(
+        `[vocechat] inbound attachment download failed account=${account.accountId} mid=${event.messageId} index=${index} url=${clipAuditSegment(url)} err=${clipAuditSegment(downloadError, 200)}`,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  await writeJsonFileAtomically(manifestPath, {
+    messageId: event.messageId,
+    signature: attachmentSignature,
+    attachments: manifestAttachments,
+  });
+
+  return {
+    ...event,
+    attachments: hydratedAttachments,
+    imageUrls: hydratedAttachments.map((attachment) => attachment.url).filter(Boolean) as string[],
+    localFiles: hydratedAttachments.map((attachment) => attachment.localFile).filter(Boolean) as string[],
+  };
+}
+
+function buildInboundAgentBody(event: InboundEvent): string {
+  const text = normalizeInboundText(event.text);
+  if (event.attachments.length === 0) return text;
+
+  const localAttachments = event.attachments.filter((attachment) => attachment.localFile);
+  const failedAttachments = event.attachments.filter((attachment) => !attachment.localFile);
+  const lines: string[] = [];
+
+  if (localAttachments.length > 0) {
+    lines.push(
+      localAttachments.length === 1 ? "用户发送了一张图片。" : `用户发送了 ${localAttachments.length} 张图片。`,
+    );
+  } else {
+    lines.push(
+      failedAttachments.length === 1 ? "用户发送了一张图片，但插件未能落地文件。" : `用户发送了 ${failedAttachments.length} 张图片，但插件未能落地文件。`,
+    );
+  }
+
+  if (text) lines.push(`用户问题：${text}`);
+
+  for (const attachment of localAttachments) {
+    lines.push(`本地文件：${attachment.localFile}`);
+    if (attachment.fileName) lines.push(`原始文件名：${attachment.fileName}`);
+    if (attachment.mimeType) lines.push(`MIME：${attachment.mimeType}`);
+  }
+
+  for (const attachment of failedAttachments) {
+    lines.push("图片下载失败。");
+    if (attachment.url) lines.push(`资源 URL：${attachment.url}`);
+    lines.push(`messageId：${attachment.messageId}`);
+    lines.push(`失败原因：${attachment.downloadError || "unknown_error"}`);
+  }
+
+  lines.push("如有需要请直接识别图片内容并结合用户问题回复。");
+  return lines.join("\n");
 }
 
 async function loadHostConfigForEdit(): Promise<Record<string, unknown>> {
@@ -1220,12 +2132,29 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
     new Set(visibleTypes.map((value) => normalizeInboundType(value)).filter(Boolean)),
   );
   const hasExplicitType = normalizedTypes.length > 0;
-  const hasSupportedType = normalizedTypes.some((value) => isSupportedInboundTextType(value));
+  const hasSupportedTextType = normalizedTypes.some((value) => isSupportedInboundTextType(value));
   const hasBlockedType = normalizedTypes.some((value) => account.inboundBlockedTypes.includes(value));
 
   if (hasBlockedType) return null;
 
-  const textRaw = firstNonEmptyString([
+  const messageId =
+    firstNonEmptyId([
+      payload.mid,
+      payload.message_id,
+      payload.messageId,
+      payload.msg_id,
+      payload.msgId,
+      detail.mid,
+      detail.message_id,
+      detail.messageId,
+      detail.msg_id,
+      detail.msgId,
+    ]) || `${Date.now()}`;
+
+  const attachments = extractInboundAttachments(raw, messageId, account);
+  const imageUrls = attachments.map((attachment) => attachment.url).filter(Boolean) as string[];
+
+  const originalText = firstNonEmptyString([
     detail.content,
     detail.text,
     payload.content,
@@ -1233,19 +2162,21 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
     detail.preview,
     payload.preview,
   ]);
-  const text = normalizeInboundText(textRaw);
-  if (!text) return null;
-  if (text.length < account.inboundMinTextLength) return null;
+  const normalizedOriginalText = normalizeInboundText(originalText);
+  const text = attachments.length > 0 ? stripImageReferencesFromText(normalizedOriginalText) : normalizedOriginalText;
+
+  if (!text && attachments.length === 0) return null;
   if (text.length > account.inboundMaxTextLength) return null;
+  if (attachments.length === 0 && text.length < account.inboundMinTextLength) return null;
 
   if (account.inboundParseMode === "strict") {
-    if (!hasExplicitType || !hasSupportedType) return null;
+    if (!hasExplicitType || (!hasSupportedTextType && attachments.length === 0)) return null;
   } else if (account.inboundParseMode === "legacy") {
-    if (hasExplicitType && !hasSupportedType) return null;
+    if (hasExplicitType && !hasSupportedTextType && attachments.length === 0) return null;
   } else {
     // balanced
-    if (hasExplicitType && !hasSupportedType) return null;
-    if (!hasExplicitType && !account.inboundAllowTypelessText) return null;
+    if (hasExplicitType && !hasSupportedTextType && attachments.length === 0) return null;
+    if (!hasExplicitType && !account.inboundAllowTypelessText && attachments.length === 0) return null;
   }
 
   const fromUid = firstNonEmptyId([
@@ -1304,20 +2235,6 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
   const chatType: "direct" | "group" = groupId ? "group" : "direct";
   const conversationId = groupId || fromUid;
 
-  const messageId =
-    firstNonEmptyId([
-      payload.mid,
-      payload.message_id,
-      payload.messageId,
-      payload.msg_id,
-      payload.msgId,
-      detail.mid,
-      detail.message_id,
-      detail.messageId,
-      detail.msg_id,
-      detail.msgId,
-    ]) || `${Date.now()}`;
-
   const timestamp = parseTimestampMs(
     payload.created_at ??
       payload.createdAt ??
@@ -1337,8 +2254,12 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
     conversationId,
     groupId: groupId || undefined,
     text,
+    originalText: normalizedOriginalText,
     timestamp,
     replyTarget,
+    attachments,
+    imageUrls,
+    localFiles: [],
   };
 }
 
@@ -1447,12 +2368,13 @@ async function processInboundEvent(params: {
     error?: (message: string) => void;
   };
 }): Promise<void> {
-  const { accountId, event, logger } = params;
+  const { accountId, logger } = params;
   const runtime = getVoceChatRuntime();
   const cfg = await runtime.config.loadConfig();
   const account = resolveVoceChatAccount(cfg, accountId);
+  let event = params.event;
   logger?.info?.(
-    `[vocechat] inbound begin account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType}`,
+    `[vocechat] inbound begin account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType} attachments=${event.attachments.length}`,
   );
   if (!account.enabled || !account.inboundEnabled) {
     logger?.info?.(
@@ -1516,6 +2438,15 @@ async function processInboundEvent(params: {
     }
   }
 
+  event = await hydrateInboundAttachments({
+    event,
+    account,
+    logger,
+  });
+  logger?.info?.(
+    `[vocechat] inbound media ready account=${account.accountId} mid=${event.messageId} localFiles=${event.localFiles.length} attachmentCount=${event.attachments.length}`,
+  );
+
   const route = runtime.channel.routing.resolveAgentRoute({
     cfg,
     channel: CHANNEL_ID,
@@ -1544,6 +2475,7 @@ async function processInboundEvent(params: {
     event.chatType === "group"
       ? `group:${event.groupId ?? event.conversationId}`
       : `user:${event.fromUid}`;
+  const agentBody = buildInboundAgentBody(event);
 
   const body = runtime.channel.reply.formatAgentEnvelope({
     channel: "VoceChat",
@@ -1551,14 +2483,14 @@ async function processInboundEvent(params: {
     timestamp: event.timestamp,
     previousTimestamp,
     envelope: envelopeOptions,
-    body: event.text,
+    body: agentBody,
   });
 
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
-    BodyForAgent: event.text,
-    RawBody: event.text,
-    CommandBody: event.text,
+    BodyForAgent: agentBody,
+    RawBody: agentBody,
+    CommandBody: agentBody,
     From: `vocechat:${event.fromUid}`,
     To: `vocechat:${event.replyTarget}`,
     SessionKey: route.sessionKey,
@@ -1574,6 +2506,15 @@ async function processInboundEvent(params: {
     OriginatingChannel: CHANNEL_ID,
     OriginatingTo: event.replyTarget,
     CommandAuthorized: true,
+    OriginalText: event.originalText,
+    LocalFiles: event.localFiles,
+    localFiles: event.localFiles,
+    Attachments: event.attachments,
+    attachments: event.attachments,
+    ImageUrls: event.imageUrls,
+    imageUrls: event.imageUrls,
+    Media: event.attachments,
+    media: event.attachments,
   });
 
   await runtime.channel.session.recordInboundSession({
@@ -1749,7 +2690,7 @@ function createWebhookHandler(params: {
       return;
     }
     logger?.info?.(
-      `[vocechat] webhook parsed account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType} len=${event.text.length}`,
+      `[vocechat] webhook parsed account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType} len=${event.text.length} attachments=${event.attachments.length}`,
     );
 
     void processInboundEvent({

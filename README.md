@@ -8,6 +8,7 @@
 
 - VoceChat 出站消息发送
 - VoceChat 入站 webhook 接收
+- VoceChat 入站图片解析、下载与本地落地
 - 私聊与群聊目标解析
 - 多账号配置
 - Telegram 卡片式管理面板
@@ -23,6 +24,17 @@
 1. 宿主需要向 VoceChat 发消息时，插件解析目标类型并调用对应 Bot API。
 2. VoceChat webhook 进入插件注册的 HTTP 路由后，插件完成鉴权、解析和过滤。
 3. 合法入站消息进入宿主消息处理链；如已启用确认回复，则自动回一条确认消息。
+
+### 入站图片链路
+
+1. 插件会从 webhook 原始包中提取图片附件元信息，而不再只保留文本字段。
+2. 图片资源会优先解析成真实下载 URL，并下载到 `~/.openclaw/workspace/media/inbound/vocechat/YYYY/MM/DD/<messageId>/`。
+3. 插件会把“用户文本 + 本地图片绝对路径 + 原始文件名 + MIME”一起投递给 agent。
+4. 下载失败时，仍会显式告诉 agent “用户发的是图片”，并附带资源 URL、失败原因与 `messageId`，避免退化成一串无意义路径字符串。
+
+详细升级说明与新机器操作步骤见：
+
+- [docs/vocechat-inbound-image-upgrade.md](docs/vocechat-inbound-image-upgrade.md)
 
 ### 卡片管理
 
@@ -195,6 +207,12 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 
 ```bash
 ./scripts/doctor.sh
+```
+
+如果你是在当前仓库里直接改插件代码，并且宿主实际加载的是 `~/.openclaw/extensions/vocechat`，可以用下面这个同步脚本把仓库代码覆盖到宿主扩展目录后立即构建：
+
+```bash
+sh ./scripts/sync-to-root-extension.sh
 ```
 
 卸载插件并移除 VoceChat 服务单元：

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.9 - 2026-03-14
+
+- 新增 VoceChat 入站图片解析，支持从 webhook 原始包提取图片附件元信息
+- 新增图片资源下载与本地落地，默认保存到 `~/.openclaw/workspace/media/inbound/vocechat/...`
+- 入站投递给 agent 时附带本地绝对路径、原始文件名、MIME 与失败兜底信息
+- 复用 `manifest.json` 避免同一消息重复下载附件
+- 新增 `scripts/sync-to-root-extension.sh`，便于将仓库代码同步到宿主扩展目录并立即构建
+- 补充中文升级文档，说明新机器如何更新宿主配置与图片模型配置
+
 ## 0.4.8 - 2026-03-08
 
 - 新增 `management.quickTargets` 配置，支持真实快捷目标预设
