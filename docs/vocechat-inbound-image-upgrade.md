@@ -146,6 +146,7 @@ OPENCLAW_VOCECHAT_INSTALL_PATH=/custom/path/vocechat sh ./scripts/sync-to-root-e
       "inboundImageNormalizationEnabled": true,
       "inboundImageNormalizationMaxEdge": 2048,
       "inboundImageNormalizationQuality": 90,
+      "inboundNativeVisionEnabled": false,
       "inboundOcrEnabled": true,
       "inboundOcrLangs": "chi_sim+eng",
       "inboundOcrTimeoutMs": 120000,
@@ -158,8 +159,9 @@ OPENCLAW_VOCECHAT_INSTALL_PATH=/custom/path/vocechat sh ./scripts/sync-to-root-e
 含义：
 
 - 规范化会把图片转成更稳定的 JPEG 副本，尽量降低 provider 报“坏图”的概率
+- `inboundNativeVisionEnabled: false` 表示默认走“稳定优先”模式：只要 OCR 成功，就不再把图片作为原生 `MediaPath` 注入宿主，避免当前 provider 直接以坏图报错
 - OCR 会把图片中的可见文字追加到给 agent 的正文里
-- agent 能看图时优先看图；看图失败时仍可退回 OCR 文本，不至于完全失明
+- 以后如果宿主原生视觉链修好，再把 `inboundNativeVisionEnabled` 改成 `true`，即可恢复“原生视觉 + OCR”双轨
 
 #### 强烈推荐：使用本地 OCR 语言包目录
 

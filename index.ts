@@ -46,6 +46,7 @@ const DEFAULT_INBOUND_MERGE_MAX_MESSAGES = 3;
 const DEFAULT_INBOUND_IMAGE_NORMALIZATION_ENABLED = true;
 const DEFAULT_INBOUND_IMAGE_NORMALIZATION_MAX_EDGE = 2048;
 const DEFAULT_INBOUND_IMAGE_NORMALIZATION_QUALITY = 90;
+const DEFAULT_INBOUND_NATIVE_VISION_ENABLED = false;
 const DEFAULT_INBOUND_OCR_ENABLED = true;
 const DEFAULT_INBOUND_OCR_LANGS = "chi_sim+eng";
 const DEFAULT_INBOUND_OCR_LANG_PATH = "https://tessdata.projectnaptha.com/4.0.0";
@@ -105,6 +106,7 @@ type VoceChatAccountConfig = {
   inboundImageNormalizationEnabled?: boolean;
   inboundImageNormalizationMaxEdge?: number;
   inboundImageNormalizationQuality?: number;
+  inboundNativeVisionEnabled?: boolean;
   inboundOcrEnabled?: boolean;
   inboundOcrLangs?: string;
   inboundOcrTimeoutMs?: number;
@@ -156,6 +158,7 @@ type ResolvedAccount = {
   inboundImageNormalizationEnabled: boolean;
   inboundImageNormalizationMaxEdge: number;
   inboundImageNormalizationQuality: number;
+  inboundNativeVisionEnabled: boolean;
   inboundOcrEnabled: boolean;
   inboundOcrLangs: string[];
   inboundOcrTimeoutMs: number;
@@ -960,6 +963,10 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
       DEFAULT_INBOUND_IMAGE_NORMALIZATION_QUALITY,
       60,
       100,
+    ),
+    inboundNativeVisionEnabled: parseBoolean(
+      merged.inboundNativeVisionEnabled,
+      DEFAULT_INBOUND_NATIVE_VISION_ENABLED,
     ),
     inboundOcrEnabled: parseBoolean(merged.inboundOcrEnabled, DEFAULT_INBOUND_OCR_ENABLED),
     inboundOcrLangs: parseInboundOcrLanguages(merged.inboundOcrLangs),
@@ -2967,10 +2974,17 @@ async function processInboundEvent(params: {
       ? `group:${event.groupId ?? event.conversationId}`
       : `user:${event.fromUid}`;
   const agentBody = buildInboundAgentBody(event);
-  const mediaPaths = event.attachments.map((attachment) => normalizeString(attachment.localFile)).filter(Boolean);
-  const mediaUrls = event.attachments.map((attachment) => normalizeString(attachment.url)).filter(Boolean);
-  const mediaTypes = event.attachments.map((attachment) => normalizeMimeType(attachment.mimeType)).filter(Boolean);
+  const rawMediaPaths = event.attachments.map((attachment) => normalizeString(attachment.localFile)).filter(Boolean);
+  const rawMediaUrls = event.attachments.map((attachment) => normalizeString(attachment.url)).filter(Boolean);
+  const rawMediaTypes = event.attachments.map((attachment) => normalizeMimeType(attachment.mimeType)).filter(Boolean);
   const ocrTexts = event.attachments.map((attachment) => normalizeString(attachment.ocrText)).filter(Boolean);
+  const attachNativeVisionMedia = account.inboundNativeVisionEnabled || ocrTexts.length === 0;
+  const mediaPaths = attachNativeVisionMedia ? rawMediaPaths : [];
+  const mediaUrls = attachNativeVisionMedia ? rawMediaUrls : [];
+  const mediaTypes = attachNativeVisionMedia ? rawMediaTypes : [];
+  logger?.info?.(
+    `[vocechat] inbound agent media mode account=${account.accountId} mid=${event.messageId} nativeVision=${attachNativeVisionMedia ? "enabled" : "ocr_only"} ocrCount=${ocrTexts.length} mediaCount=${rawMediaPaths.length}`,
+  );
 
   const body = runtime.channel.reply.formatAgentEnvelope({
     channel: "VoceChat",
@@ -3345,6 +3359,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         inboundImageNormalizationEnabled: { type: "boolean" },
         inboundImageNormalizationMaxEdge: { type: "number", minimum: 512, maximum: 4096 },
         inboundImageNormalizationQuality: { type: "number", minimum: 60, maximum: 100 },
+        inboundNativeVisionEnabled: { type: "boolean" },
         inboundOcrEnabled: { type: "boolean" },
         inboundOcrLangs: { type: "string" },
         inboundOcrTimeoutMs: { type: "number", minimum: 5000, maximum: 120000 },
@@ -3410,6 +3425,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
               inboundImageNormalizationEnabled: { type: "boolean" },
               inboundImageNormalizationMaxEdge: { type: "number", minimum: 512, maximum: 4096 },
               inboundImageNormalizationQuality: { type: "number", minimum: 60, maximum: 100 },
+              inboundNativeVisionEnabled: { type: "boolean" },
               inboundOcrEnabled: { type: "boolean" },
               inboundOcrLangs: { type: "string" },
               inboundOcrTimeoutMs: { type: "number", minimum: 5000, maximum: 120000 },
@@ -3449,6 +3465,10 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       },
       inboundOcrEnabled: {
         label: "入站 OCR 兜底",
+        advanced: true,
+      },
+      inboundNativeVisionEnabled: {
+        label: "强制原生视觉",
         advanced: true,
       },
       inboundOcrLangs: {
@@ -3840,6 +3860,7 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
     `入站合并：${account.inboundMergeEnabled ? "开启" : "关闭"}`,
     `合并窗口：${account.inboundMergeWindowMs} ms / 最多 ${account.inboundMergeMaxMessages} 条`,
     `图片规范化：${account.inboundImageNormalizationEnabled ? "开启" : "关闭"} / ${account.inboundImageNormalizationMaxEdge}px / JPEG ${account.inboundImageNormalizationQuality}`,
+    `原生视觉注入：${account.inboundNativeVisionEnabled ? "始终开启" : "OCR 成功时自动关闭"}`,
     `OCR 兜底：${account.inboundOcrEnabled ? "开启" : "关闭"} / ${account.inboundOcrLangs.join("+")} / ${account.inboundOcrTimeoutMs} ms / 最多 ${account.inboundOcrMaxTextLength} 字`,
     `OCR 语言包：${account.inboundOcrLangPath ?? "<默认 CDN 缓存>"}`,
     `允许无类型文本：${account.inboundAllowTypelessText ? "是" : "否"}`,
