@@ -30,6 +30,8 @@
     "doctor": "sh scripts/doctor.sh"
   },
   "dependencies": {
+    "sharp": "^0.34.5",
+    "tesseract.js": "^7.0.0",
     "undici": "^7.16.0"
   },
   "devDependencies": {

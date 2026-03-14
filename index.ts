@@ -4,6 +4,8 @@ import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import sharp from "sharp";
+import { createWorker, OEM, PSM } from "tesseract.js";
 
 import {
   createNormalizedOutboundDeliverer,
@@ -39,6 +41,16 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_WEBHOOK_PATH = "/vocechat/webhook";
 const DEFAULT_INBOUND_ACK_TEXT = "已收到，正在处理中...";
 const DEFAULT_INBOUND_BLOCKED_TYPES = ["system", "event", "notice", "typing", "status", "reaction", "like"];
+const DEFAULT_INBOUND_MERGE_WINDOW_MS = 1200;
+const DEFAULT_INBOUND_MERGE_MAX_MESSAGES = 3;
+const DEFAULT_INBOUND_IMAGE_NORMALIZATION_ENABLED = true;
+const DEFAULT_INBOUND_IMAGE_NORMALIZATION_MAX_EDGE = 2048;
+const DEFAULT_INBOUND_IMAGE_NORMALIZATION_QUALITY = 90;
+const DEFAULT_INBOUND_OCR_ENABLED = true;
+const DEFAULT_INBOUND_OCR_LANGS = "chi_sim+eng";
+const DEFAULT_INBOUND_OCR_LANG_PATH = "https://tessdata.projectnaptha.com/4.0.0";
+const DEFAULT_INBOUND_OCR_TIMEOUT_MS = 120000;
+const DEFAULT_INBOUND_OCR_MAX_TEXT_LENGTH = 3000;
 const RECENT_MESSAGE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_INBOUND_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 const MAX_INBOUND_IMAGE_ATTACHMENTS = 8;
@@ -87,6 +99,17 @@ type VoceChatAccountConfig = {
   inboundMaxTextLength?: number;
   inboundAllowTypelessText?: boolean;
   inboundParseDebug?: boolean;
+  inboundMergeEnabled?: boolean;
+  inboundMergeWindowMs?: number;
+  inboundMergeMaxMessages?: number;
+  inboundImageNormalizationEnabled?: boolean;
+  inboundImageNormalizationMaxEdge?: number;
+  inboundImageNormalizationQuality?: number;
+  inboundOcrEnabled?: boolean;
+  inboundOcrLangs?: string;
+  inboundOcrTimeoutMs?: number;
+  inboundOcrMaxTextLength?: number;
+  inboundOcrLangPath?: string;
   webhookPath?: string;
   webhookApiKey?: string;
   allowFrom?: unknown;
@@ -127,6 +150,17 @@ type ResolvedAccount = {
   inboundMaxTextLength: number;
   inboundAllowTypelessText: boolean;
   inboundParseDebug: boolean;
+  inboundMergeEnabled: boolean;
+  inboundMergeWindowMs: number;
+  inboundMergeMaxMessages: number;
+  inboundImageNormalizationEnabled: boolean;
+  inboundImageNormalizationMaxEdge: number;
+  inboundImageNormalizationQuality: number;
+  inboundOcrEnabled: boolean;
+  inboundOcrLangs: string[];
+  inboundOcrTimeoutMs: number;
+  inboundOcrMaxTextLength: number;
+  inboundOcrLangPath?: string;
   webhookPath: string;
   webhookApiKey?: string;
   allowFrom: string[];
@@ -154,7 +188,16 @@ type InboundAttachment = {
   fileName?: string;
   mimeType?: string;
   sizeBytes?: number;
+  storedFile?: string;
+  normalizedFile?: string;
   localFile?: string;
+  normalizationError?: string;
+  ocrEngine?: string;
+  ocrLangs?: string;
+  ocrConfidence?: number;
+  ocrText?: string;
+  ocrTruncated?: boolean;
+  ocrError?: string;
   downloadError?: string;
 };
 
@@ -168,15 +211,26 @@ type InboundEvent = {
   originalText: string;
   timestamp: number;
   replyTarget: string;
+  sourceMessageIds: string[];
   attachments: InboundAttachment[];
   imageUrls: string[];
   localFiles: string[];
+};
+
+type PendingInboundMerge = {
+  key: string;
+  accountId: string;
+  createdAt: number;
+  flushAt: number;
+  events: InboundEvent[];
+  timer?: ReturnType<typeof setTimeout>;
 };
 
 let runtimeRef: PluginRuntime | null = null;
 const activeRouteUnregisters = new Map<string, () => void>();
 const recentOutboundMessageIds = new Map<string, number>();
 const recentInboundMessageIds = new Map<string, number>();
+const pendingInboundMerges = new Map<string, PendingInboundMerge>();
 
 function setVoceChatRuntime(runtime: PluginRuntime): void {
   runtimeRef = runtime;
@@ -322,6 +376,15 @@ function parseInboundParseMode(value: unknown): InboundParseMode {
   return "balanced";
 }
 
+function parseInboundOcrLanguages(value: unknown): string[] {
+  const raw = normalizeString(value);
+  const parts = (raw || DEFAULT_INBOUND_OCR_LANGS)
+    .split(/[+,]/)
+    .map((entry) => normalizeString(entry))
+    .filter(Boolean);
+  return Array.from(new Set(parts.length > 0 ? parts : ["eng"]));
+}
+
 function parseBoundedInt(value: unknown, fallback: number, min: number, max: number): number {
   const raw = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(raw)) return fallback;
@@ -350,6 +413,15 @@ function parseInboundTypeEntries(value: unknown): string[] {
 
 function normalizeInboundText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function normalizeOcrText(text: string): string {
+  return text
+    .replace(/\r/g, "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function normalizeMimeType(value: unknown): string {
@@ -870,6 +942,40 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
     inboundMaxTextLength: parseBoundedInt(merged.inboundMaxTextLength, 4000, 50, 20000),
     inboundAllowTypelessText: parseBoolean(merged.inboundAllowTypelessText, true),
     inboundParseDebug: parseBoolean(merged.inboundParseDebug, false),
+    inboundMergeEnabled: parseBoolean(merged.inboundMergeEnabled, true),
+    inboundMergeWindowMs: parseBoundedInt(merged.inboundMergeWindowMs, DEFAULT_INBOUND_MERGE_WINDOW_MS, 0, 10000),
+    inboundMergeMaxMessages: parseBoundedInt(merged.inboundMergeMaxMessages, DEFAULT_INBOUND_MERGE_MAX_MESSAGES, 1, 10),
+    inboundImageNormalizationEnabled: parseBoolean(
+      merged.inboundImageNormalizationEnabled,
+      DEFAULT_INBOUND_IMAGE_NORMALIZATION_ENABLED,
+    ),
+    inboundImageNormalizationMaxEdge: parseBoundedInt(
+      merged.inboundImageNormalizationMaxEdge,
+      DEFAULT_INBOUND_IMAGE_NORMALIZATION_MAX_EDGE,
+      512,
+      4096,
+    ),
+    inboundImageNormalizationQuality: parseBoundedInt(
+      merged.inboundImageNormalizationQuality,
+      DEFAULT_INBOUND_IMAGE_NORMALIZATION_QUALITY,
+      60,
+      100,
+    ),
+    inboundOcrEnabled: parseBoolean(merged.inboundOcrEnabled, DEFAULT_INBOUND_OCR_ENABLED),
+    inboundOcrLangs: parseInboundOcrLanguages(merged.inboundOcrLangs),
+    inboundOcrTimeoutMs: parseBoundedInt(
+      merged.inboundOcrTimeoutMs,
+      DEFAULT_INBOUND_OCR_TIMEOUT_MS,
+      5000,
+      120000,
+    ),
+    inboundOcrMaxTextLength: parseBoundedInt(
+      merged.inboundOcrMaxTextLength,
+      DEFAULT_INBOUND_OCR_MAX_TEXT_LENGTH,
+      200,
+      10000,
+    ),
+    inboundOcrLangPath: normalizeString(merged.inboundOcrLangPath) || DEFAULT_INBOUND_OCR_LANG_PATH,
     webhookPath: normalizeWebhookPath(merged.webhookPath),
     webhookApiKey: normalizeString(merged.webhookApiKey) || undefined,
     allowFrom: parseAllowEntries(merged.allowFrom),
@@ -965,6 +1071,10 @@ function resolveInboundMediaRootDir(): string {
   return path.join(resolveOpenClawStateDir(), "workspace", "media", "inbound", "vocechat");
 }
 
+function resolveInboundOcrCacheDir(): string {
+  return path.join(resolveOpenClawStateDir(), "workspace", "cache", "vocechat-ocr");
+}
+
 function formatInboundDatePath(timestamp: number): string[] {
   const date = new Date(timestamp || Date.now());
   const year = String(date.getFullYear());
@@ -979,6 +1089,28 @@ function buildInboundMediaMessageDir(event: InboundEvent): string {
     ...formatInboundDatePath(event.timestamp),
     sanitizePathSegment(event.messageId, "message"),
   );
+}
+
+async function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => Promise<void> | void,
+): Promise<T> {
+  if (timeoutMs <= 0) return await operation;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => {
+        void Promise.resolve(onTimeout?.()).finally(() => {
+          reject(new Error(`timeout after ${timeoutMs} ms`));
+        });
+      }, timeoutMs);
+      operation.then(resolve, reject);
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -1183,14 +1315,243 @@ function buildInboundAttachmentSignature(attachments: InboundAttachment[]): stri
   return attachments
     .map((attachment) =>
       [
+        attachment.kind || "-",
+        attachment.messageId || "-",
+        attachment.source || "-",
         attachment.attachmentId || "-",
         attachment.url || "-",
         attachment.fileName || "-",
-        attachment.mimeType || "-",
-        attachment.sizeBytes ?? "-",
       ].join("|"),
     )
     .join("||");
+}
+
+async function persistInboundAttachmentManifest(event: InboundEvent, attachments: InboundAttachment[]): Promise<void> {
+  const messageDir = buildInboundMediaMessageDir(event);
+  const manifestPath = path.join(messageDir, "manifest.json");
+  await fs.mkdir(messageDir, { recursive: true });
+  await writeJsonFileAtomically(manifestPath, {
+    messageId: event.messageId,
+    signature: buildInboundAttachmentSignature(event.attachments),
+    attachments,
+  });
+}
+
+async function normalizeInboundAttachmentForAgent(params: {
+  event: InboundEvent;
+  attachment: InboundAttachment;
+  index: number;
+  account: ResolvedAccount;
+}): Promise<InboundAttachment> {
+  const { event, attachment, index, account } = params;
+  const currentLocalFile = normalizeString(attachment.localFile);
+  const storedFile = normalizeString(attachment.storedFile) || currentLocalFile;
+  if (!storedFile) return attachment;
+
+  const existingNormalizedFile = normalizeString(attachment.normalizedFile);
+  if (existingNormalizedFile && (await fileExists(existingNormalizedFile))) {
+    return {
+      ...attachment,
+      storedFile: storedFile || undefined,
+      normalizedFile: existingNormalizedFile,
+      localFile: existingNormalizedFile,
+      mimeType: "image/jpeg",
+      normalizationError: undefined,
+    };
+  }
+
+  const messageDir = buildInboundMediaMessageDir(event);
+  const targetPath = path.join(messageDir, `${String(index + 1).padStart(2, "0")}-agent.jpg`);
+  const image = sharp(storedFile, { failOn: "none" }).rotate();
+  const metadata = await image.metadata();
+  const pipeline = image.resize({
+    width: account.inboundImageNormalizationMaxEdge,
+    height: account.inboundImageNormalizationMaxEdge,
+    fit: "inside",
+    withoutEnlargement: true,
+  });
+
+  if (metadata.hasAlpha) {
+    pipeline.flatten({ background: "#ffffff" });
+  }
+
+  await pipeline.jpeg({
+    quality: account.inboundImageNormalizationQuality,
+    mozjpeg: true,
+    chromaSubsampling: "4:4:4",
+  }).toFile(targetPath);
+
+  return {
+    ...attachment,
+    storedFile: storedFile || undefined,
+    normalizedFile: targetPath,
+    localFile: targetPath,
+    mimeType: "image/jpeg",
+    normalizationError: undefined,
+  };
+}
+
+async function runInboundAttachmentOcr(params: {
+  attachment: InboundAttachment;
+  account: ResolvedAccount;
+}): Promise<Pick<InboundAttachment, "ocrEngine" | "ocrLangs" | "ocrConfidence" | "ocrText" | "ocrTruncated">> {
+  const { attachment, account } = params;
+  const sourcePath = normalizeString(attachment.localFile) || normalizeString(attachment.storedFile);
+  if (!sourcePath) throw new Error("missing_local_file");
+
+  let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+  const langs = account.inboundOcrLangs;
+  const langLabel = langs.join("+");
+
+  try {
+    const operation = (async () => {
+      await fs.mkdir(resolveInboundOcrCacheDir(), { recursive: true });
+      worker = await createWorker(
+        langs.length === 1 ? langs[0] : langs,
+        OEM.LSTM_ONLY,
+        {
+          cachePath: resolveInboundOcrCacheDir(),
+          langPath: account.inboundOcrLangPath,
+          gzip: true,
+        },
+      );
+      await worker.setParameters({
+        preserve_interword_spaces: "1",
+        tessedit_pageseg_mode: PSM.AUTO,
+        user_defined_dpi: "300",
+      });
+      const input = await sharp(sourcePath, { failOn: "none" })
+        .rotate()
+        .resize({
+          width: Math.max(account.inboundImageNormalizationMaxEdge, 2200),
+          height: Math.max(account.inboundImageNormalizationMaxEdge, 2200),
+          fit: "inside",
+          withoutEnlargement: false,
+        })
+        .greyscale()
+        .normalize()
+        .png()
+        .toBuffer();
+      const result = await worker.recognize(input, { rotateAuto: true }, { blocks: true });
+      const text = normalizeOcrText(result.data.text || "");
+      const truncated = text.length > account.inboundOcrMaxTextLength;
+      return {
+        ocrEngine: "tesseract.js",
+        ocrLangs: langLabel,
+        ocrConfidence: Number.isFinite(result.data.confidence) ? Math.round(result.data.confidence) : undefined,
+        ocrText: truncated ? text.slice(0, account.inboundOcrMaxTextLength) : text,
+        ocrTruncated: truncated || undefined,
+      };
+    })();
+
+    return await withTimeout(operation, account.inboundOcrTimeoutMs, async () => {
+      await worker?.terminate().catch(() => {});
+    });
+  } finally {
+    await worker?.terminate().catch(() => {});
+  }
+}
+
+async function enhanceInboundAttachmentsForAgent(params: {
+  event: InboundEvent;
+  account: ResolvedAccount;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): Promise<InboundEvent> {
+  const { event, account, logger } = params;
+  if (event.attachments.length === 0) return event;
+
+  const nextAttachments: InboundAttachment[] = [];
+  let changed = false;
+
+  for (let index = 0; index < event.attachments.length; index += 1) {
+    let attachment = { ...event.attachments[index] };
+    const localFile = normalizeString(attachment.localFile);
+
+    if (localFile && account.inboundImageNormalizationEnabled) {
+      try {
+        const normalized = await normalizeInboundAttachmentForAgent({
+          event,
+          attachment,
+          index,
+          account,
+        });
+        changed ||= normalized.localFile !== attachment.localFile || normalized.normalizedFile !== attachment.normalizedFile;
+        attachment = normalized;
+        if (attachment.normalizedFile) {
+          logger?.info?.(
+            `[vocechat] inbound attachment normalized account=${account.accountId} mid=${event.messageId} index=${index} path=${attachment.normalizedFile}`,
+          );
+        }
+      } catch (error) {
+        const normalizationError = error instanceof Error ? error.message : String(error);
+        attachment = {
+          ...attachment,
+          storedFile: normalizeString(attachment.storedFile) || localFile || undefined,
+          normalizationError,
+        };
+        changed = true;
+        logger?.warn?.(
+          `[vocechat] inbound attachment normalize failed account=${account.accountId} mid=${event.messageId} index=${index} path=${clipAuditSegment(localFile)} err=${clipAuditSegment(normalizationError, 200)}`,
+        );
+      }
+    }
+
+    const ocrText = normalizeOcrText(attachment.ocrText || "");
+    const hasOcrAttempt = Boolean(normalizeString(attachment.ocrEngine) || normalizeString(attachment.ocrError));
+    if (
+      account.inboundOcrEnabled &&
+      normalizeString(attachment.localFile) &&
+      !hasOcrAttempt
+    ) {
+      try {
+        const ocr = await runInboundAttachmentOcr({ attachment, account });
+        attachment = {
+          ...attachment,
+          ...ocr,
+          ocrError: undefined,
+        };
+        changed = true;
+        logger?.info?.(
+          `[vocechat] inbound attachment ocr ok account=${account.accountId} mid=${event.messageId} index=${index} confidence=${ocr.ocrConfidence ?? "-"} chars=${ocr.ocrText?.length ?? 0}`,
+        );
+      } catch (error) {
+        const ocrError = error instanceof Error ? error.message : String(error);
+        attachment = {
+          ...attachment,
+          ocrError,
+        };
+        changed = true;
+        logger?.warn?.(
+          `[vocechat] inbound attachment ocr failed account=${account.accountId} mid=${event.messageId} index=${index} path=${clipAuditSegment(attachment.localFile)} err=${clipAuditSegment(ocrError, 200)}`,
+        );
+      }
+    } else if (ocrText && ocrText !== attachment.ocrText) {
+      attachment = {
+        ...attachment,
+        ocrText,
+      };
+      changed = true;
+    }
+
+    nextAttachments.push(attachment);
+  }
+
+  const nextEvent = {
+    ...event,
+    attachments: nextAttachments,
+    imageUrls: nextAttachments.map((attachment) => attachment.url).filter(Boolean) as string[],
+    localFiles: nextAttachments.map((attachment) => attachment.localFile).filter(Boolean) as string[],
+  };
+
+  if (changed) {
+    await persistInboundAttachmentManifest(nextEvent, nextAttachments);
+  }
+
+  return nextEvent;
 }
 
 async function hydrateInboundAttachments(params: {
@@ -1227,9 +1588,18 @@ async function hydrateInboundAttachments(params: {
         reusedAttachments.push({
           ...event.attachments[index],
           localFile,
+          storedFile: normalizeString(saved.storedFile) || undefined,
+          normalizedFile: normalizeString(saved.normalizedFile) || undefined,
           mimeType: normalizeMimeType(saved.mimeType) || event.attachments[index]?.mimeType,
           fileName: normalizeString(saved.fileName) || event.attachments[index]?.fileName,
           sizeBytes: parseOptionalSize(saved.sizeBytes) ?? event.attachments[index]?.sizeBytes,
+          normalizationError: normalizeString(saved.normalizationError) || undefined,
+          ocrEngine: normalizeString(saved.ocrEngine) || undefined,
+          ocrLangs: normalizeString(saved.ocrLangs) || undefined,
+          ocrConfidence: parseOptionalSize(saved.ocrConfidence),
+          ocrText: normalizeString(saved.ocrText) || undefined,
+          ocrTruncated: saved.ocrTruncated === true ? true : undefined,
+          ocrError: normalizeString(saved.ocrError) || undefined,
         });
       }
       if (allFilesExist) {
@@ -1313,6 +1683,7 @@ async function hydrateInboundAttachments(params: {
         fileName: resolvedFileName,
         mimeType: inferredMimeType || attachment.mimeType,
         sizeBytes: response.body.length,
+        storedFile: targetPath,
         localFile: targetPath,
         downloadError: undefined,
       };
@@ -1364,6 +1735,7 @@ function buildInboundAgentBody(event: InboundEvent): string {
     lines.push(
       localAttachments.length === 1 ? "用户发送了一张图片。" : `用户发送了 ${localAttachments.length} 张图片。`,
     );
+    lines.push("已同时提供原生图片文件与 OCR 提取文本。若你能直接读取图片，请以图片视觉内容为准；OCR 仅作兜底，可能遗漏版式、颜色、图表关系和非文字元素。");
   } else {
     lines.push(
       failedAttachments.length === 1 ? "用户发送了一张图片，但插件未能落地文件。" : `用户发送了 ${failedAttachments.length} 张图片，但插件未能落地文件。`,
@@ -1372,10 +1744,29 @@ function buildInboundAgentBody(event: InboundEvent): string {
 
   if (text) lines.push(`用户问题：${text}`);
 
-  for (const attachment of localAttachments) {
+  for (let index = 0; index < localAttachments.length; index += 1) {
+    const attachment = localAttachments[index];
+    lines.push(localAttachments.length > 1 ? `图片 ${index + 1}：` : "图片：");
     lines.push(`本地文件：${attachment.localFile}`);
+    if (attachment.storedFile && attachment.storedFile !== attachment.localFile) {
+      lines.push(`原始落地文件：${attachment.storedFile}`);
+    }
     if (attachment.fileName) lines.push(`原始文件名：${attachment.fileName}`);
     if (attachment.mimeType) lines.push(`MIME：${attachment.mimeType}`);
+    if (attachment.ocrText) {
+      const ocrMeta = [
+        attachment.ocrEngine || "ocr",
+        attachment.ocrLangs || undefined,
+        attachment.ocrConfidence !== undefined ? `置信度 ${attachment.ocrConfidence}` : undefined,
+        attachment.ocrTruncated ? "已截断" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" / ");
+      lines.push(`OCR 提取${ocrMeta ? `（${ocrMeta}）` : ""}：`);
+      lines.push(attachment.ocrText);
+    } else if (attachment.ocrError) {
+      lines.push(`OCR 状态：${attachment.ocrError}`);
+    }
   }
 
   for (const attachment of failedAttachments) {
@@ -1385,8 +1776,127 @@ function buildInboundAgentBody(event: InboundEvent): string {
     lines.push(`失败原因：${attachment.downloadError || "unknown_error"}`);
   }
 
-  lines.push("如有需要请直接识别图片内容并结合用户问题回复。");
+  lines.push("请结合用户问题回复；能看图时优先依据图片本身，不能看图时再参考 OCR 文本。");
   return lines.join("\n");
+}
+
+function buildInboundMergeKey(accountId: string, event: InboundEvent): string {
+  return [accountId, event.chatType, event.conversationId, event.fromUid].join(":");
+}
+
+function mergeInboundTextSegments(values: string[]): string {
+  return values
+    .map((value) => normalizeInboundText(value))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function mergeInboundStringArrays(values: string[][]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const group of values) {
+    for (const entry of group) {
+      const normalized = normalizeString(entry);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      merged.push(normalized);
+    }
+  }
+  return merged;
+}
+
+function mergeInboundEvents(events: InboundEvent[]): InboundEvent {
+  const ordered = [...events].sort((left, right) => left.timestamp - right.timestamp);
+  const last = ordered[ordered.length - 1];
+  return {
+    ...last,
+    text: mergeInboundTextSegments(ordered.map((event) => event.text)),
+    originalText: mergeInboundTextSegments(ordered.map((event) => event.originalText)),
+    timestamp: last.timestamp,
+    sourceMessageIds: mergeInboundStringArrays(ordered.map((event) => event.sourceMessageIds)),
+    attachments: ordered.flatMap((event) => event.attachments),
+    imageUrls: [],
+    localFiles: [],
+  };
+}
+
+function shouldHoldInboundEventForMerge(account: ResolvedAccount, event: InboundEvent): boolean {
+  if (!account.inboundMergeEnabled) return false;
+  if (account.inboundMergeWindowMs <= 0) return false;
+  if (account.inboundMergeMaxMessages <= 1) return false;
+
+  const normalizedText = normalizeInboundText(event.originalText || event.text);
+  if (!normalizedText && event.attachments.length === 0) return false;
+  if (normalizedText.startsWith("/")) return false;
+  return true;
+}
+
+function acceptInboundEventForProcessing(params: {
+  account: ResolvedAccount;
+  event: InboundEvent;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): boolean {
+  const { account, event, logger } = params;
+  logger?.info?.(
+    `[vocechat] inbound begin account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType} attachments=${event.attachments.length}`,
+  );
+
+  if (!account.enabled || !account.inboundEnabled) {
+    logger?.info?.(
+      `[vocechat] inbound ignored: account disabled account=${account.accountId} enabled=${account.enabled} inboundEnabled=${account.inboundEnabled}`,
+    );
+    return false;
+  }
+
+  const messageKey = makeMessageKey(account.accountId, event.messageId);
+  if (hasRecentMessage(recentOutboundMessageIds, messageKey)) {
+    logger?.info?.(`[vocechat] skip outbound echo mid=${event.messageId}`);
+    return false;
+  }
+
+  if (hasRecentMessage(recentInboundMessageIds, messageKey)) {
+    logger?.info?.(`[vocechat] skip duplicated inbound mid=${event.messageId}`);
+    return false;
+  }
+
+  if (!isInboundAuthorized(account, event)) {
+    logger?.warn?.(
+      `[vocechat] drop unauthorized sender uid=${event.fromUid} account=${account.accountId} chatType=${event.chatType}`,
+    );
+    return false;
+  }
+
+  rememberRecentMessage(recentInboundMessageIds, messageKey);
+  return true;
+}
+
+function clearPendingInboundMerge(pending: PendingInboundMerge): void {
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+    pending.timer = undefined;
+  }
+}
+
+function clearPendingInboundMergesForAccount(
+  accountId: string,
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  },
+): void {
+  for (const [key, pending] of pendingInboundMerges.entries()) {
+    if (pending.accountId !== accountId) continue;
+    clearPendingInboundMerge(pending);
+    pendingInboundMerges.delete(key);
+    logger?.info?.(
+      `[vocechat] inbound merge dropped account=${accountId} key=${key} reason=account_stop pendingCount=${pending.events.length}`,
+    );
+  }
 }
 
 async function loadHostConfigForEdit(): Promise<Record<string, unknown>> {
@@ -2257,6 +2767,7 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
     originalText: normalizedOriginalText,
     timestamp,
     replyTarget,
+    sourceMessageIds: [messageId],
     attachments,
     imageUrls,
     localFiles: [],
@@ -2362,44 +2873,19 @@ function readHeader(headers: Record<string, string | string[] | undefined>, key:
 async function processInboundEvent(params: {
   accountId: string;
   event: InboundEvent;
+  skipAcceptanceCheck?: boolean;
   logger?: {
     info?: (message: string) => void;
     warn?: (message: string) => void;
     error?: (message: string) => void;
   };
 }): Promise<void> {
-  const { accountId, logger } = params;
+  const { accountId, logger, skipAcceptanceCheck } = params;
   const runtime = getVoceChatRuntime();
   const cfg = await runtime.config.loadConfig();
   const account = resolveVoceChatAccount(cfg, accountId);
   let event = params.event;
-  logger?.info?.(
-    `[vocechat] inbound begin account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType} attachments=${event.attachments.length}`,
-  );
-  if (!account.enabled || !account.inboundEnabled) {
-    logger?.info?.(
-      `[vocechat] inbound ignored: account disabled account=${account.accountId} enabled=${account.enabled} inboundEnabled=${account.inboundEnabled}`,
-    );
-    return;
-  }
-
-  const messageKey = makeMessageKey(account.accountId, event.messageId);
-  if (hasRecentMessage(recentOutboundMessageIds, messageKey)) {
-    logger?.info?.(`[vocechat] skip outbound echo mid=${event.messageId}`);
-    return;
-  }
-  if (hasRecentMessage(recentInboundMessageIds, messageKey)) {
-    logger?.info?.(`[vocechat] skip duplicated inbound mid=${event.messageId}`);
-    return;
-  }
-  rememberRecentMessage(recentInboundMessageIds, messageKey);
-
-  if (!isInboundAuthorized(account, event)) {
-    logger?.warn?.(
-      `[vocechat] drop unauthorized sender uid=${event.fromUid} account=${account.accountId} chatType=${event.chatType}`,
-    );
-    return;
-  }
+  if (!skipAcceptanceCheck && !acceptInboundEventForProcessing({ account, event, logger })) return;
 
   const ackReaction = resolveAckReaction(cfg, account.accountId);
   const ackReactionScope = resolveAckReactionScope(cfg);
@@ -2443,6 +2929,11 @@ async function processInboundEvent(params: {
     account,
     logger,
   });
+  event = await enhanceInboundAttachmentsForAgent({
+    event,
+    account,
+    logger,
+  });
   logger?.info?.(
     `[vocechat] inbound media ready account=${account.accountId} mid=${event.messageId} localFiles=${event.localFiles.length} attachmentCount=${event.attachments.length}`,
   );
@@ -2476,6 +2967,10 @@ async function processInboundEvent(params: {
       ? `group:${event.groupId ?? event.conversationId}`
       : `user:${event.fromUid}`;
   const agentBody = buildInboundAgentBody(event);
+  const mediaPaths = event.attachments.map((attachment) => normalizeString(attachment.localFile)).filter(Boolean);
+  const mediaUrls = event.attachments.map((attachment) => normalizeString(attachment.url)).filter(Boolean);
+  const mediaTypes = event.attachments.map((attachment) => normalizeMimeType(attachment.mimeType)).filter(Boolean);
+  const ocrTexts = event.attachments.map((attachment) => normalizeString(attachment.ocrText)).filter(Boolean);
 
   const body = runtime.channel.reply.formatAgentEnvelope({
     channel: "VoceChat",
@@ -2502,11 +2997,19 @@ async function processInboundEvent(params: {
     Provider: CHANNEL_ID,
     Surface: CHANNEL_ID,
     MessageSid: event.messageId,
+    SourceMessageIds: event.sourceMessageIds,
+    sourceMessageIds: event.sourceMessageIds,
     Timestamp: event.timestamp,
     OriginatingChannel: CHANNEL_ID,
     OriginatingTo: event.replyTarget,
     CommandAuthorized: true,
     OriginalText: event.originalText,
+    MediaPath: mediaPaths[0],
+    MediaPaths: mediaPaths,
+    MediaUrl: mediaUrls[0],
+    MediaUrls: mediaUrls,
+    MediaType: mediaTypes[0],
+    MediaTypes: mediaTypes,
     LocalFiles: event.localFiles,
     localFiles: event.localFiles,
     Attachments: event.attachments,
@@ -2515,6 +3018,9 @@ async function processInboundEvent(params: {
     imageUrls: event.imageUrls,
     Media: event.attachments,
     media: event.attachments,
+    OcrText: ocrTexts[0],
+    OcrTexts: ocrTexts,
+    ImageOcrTexts: ocrTexts,
   });
 
   await runtime.channel.session.recordInboundSession({
@@ -2599,6 +3105,94 @@ async function processInboundEvent(params: {
   });
   logger?.info?.(
     `[vocechat] inbound dispatch complete account=${account.accountId} mid=${event.messageId} replyTarget=${event.replyTarget}`,
+  );
+}
+
+async function flushInboundMerge(params: {
+  key: string;
+  reason: "timeout" | "max_messages";
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): Promise<void> {
+  const pending = pendingInboundMerges.get(params.key);
+  if (!pending) return;
+
+  pendingInboundMerges.delete(params.key);
+  clearPendingInboundMerge(pending);
+
+  const event = pending.events.length === 1 ? pending.events[0] : mergeInboundEvents(pending.events);
+  const mids = event.sourceMessageIds.join(",");
+  params.logger?.info?.(
+    `[vocechat] inbound merge flushed account=${pending.accountId} key=${params.key} reason=${params.reason} count=${pending.events.length} mids=${clipAuditSegment(mids, 240)}`,
+  );
+  params.logger?.info?.(
+    `[vocechat] inbound merge produced account=${pending.accountId} key=${params.key} textLen=${event.text.length} attachmentCount=${event.attachments.length}`,
+  );
+
+  await processInboundEvent({
+    accountId: pending.accountId,
+    event,
+    skipAcceptanceCheck: true,
+    logger: params.logger,
+  });
+}
+
+function enqueueInboundMergeOrDispatch(params: {
+  account: ResolvedAccount;
+  event: InboundEvent;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): void {
+  const { account, event, logger } = params;
+  if (!shouldHoldInboundEventForMerge(account, event)) {
+    void processInboundEvent({
+      accountId: account.accountId,
+      event,
+      skipAcceptanceCheck: true,
+      logger,
+    }).catch((err) => {
+      logger?.error?.(`[vocechat] inbound dispatch failed: ${String(err)}`);
+    });
+    return;
+  }
+
+  const key = buildInboundMergeKey(account.accountId, event);
+  const existing = pendingInboundMerges.get(key);
+  if (existing) {
+    existing.events.push(event);
+    logger?.info?.(
+      `[vocechat] inbound merge appended account=${account.accountId} key=${key} mid=${event.messageId} pendingCount=${existing.events.length}`,
+    );
+    if (existing.events.length >= account.inboundMergeMaxMessages) {
+      void flushInboundMerge({ key, reason: "max_messages", logger }).catch((err) => {
+        logger?.error?.(`[vocechat] inbound merge flush failed key=${key} err=${String(err)}`);
+      });
+    }
+    return;
+  }
+
+  const pending: PendingInboundMerge = {
+    key,
+    accountId: account.accountId,
+    createdAt: nowMs(),
+    flushAt: nowMs() + account.inboundMergeWindowMs,
+    events: [event],
+  };
+  pending.timer = setTimeout(() => {
+    void flushInboundMerge({ key, reason: "timeout", logger }).catch((err) => {
+      logger?.error?.(`[vocechat] inbound merge flush failed key=${key} err=${String(err)}`);
+    });
+  }, account.inboundMergeWindowMs);
+  pending.timer.unref?.();
+  pendingInboundMerges.set(key, pending);
+  logger?.info?.(
+    `[vocechat] inbound merge queued account=${account.accountId} key=${key} mid=${event.messageId} holdMs=${account.inboundMergeWindowMs}`,
   );
 }
 
@@ -2692,13 +3286,11 @@ function createWebhookHandler(params: {
     logger?.info?.(
       `[vocechat] webhook parsed account=${account.accountId} mid=${event.messageId} from=${event.fromUid} chat=${event.chatType} len=${event.text.length} attachments=${event.attachments.length}`,
     );
-
-    void processInboundEvent({
-      accountId,
+    if (!acceptInboundEventForProcessing({ account, event, logger })) return;
+    enqueueInboundMergeOrDispatch({
+      account,
       event,
       logger,
-    }).catch((err) => {
-      logger?.error?.(`[vocechat] inbound dispatch failed: ${String(err)}`);
     });
   };
 }
@@ -2747,6 +3339,17 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         inboundMaxTextLength: { type: "number", minimum: 50, maximum: 20000 },
         inboundAllowTypelessText: { type: "boolean" },
         inboundParseDebug: { type: "boolean" },
+        inboundMergeEnabled: { type: "boolean" },
+        inboundMergeWindowMs: { type: "number", minimum: 0, maximum: 10000 },
+        inboundMergeMaxMessages: { type: "number", minimum: 1, maximum: 10 },
+        inboundImageNormalizationEnabled: { type: "boolean" },
+        inboundImageNormalizationMaxEdge: { type: "number", minimum: 512, maximum: 4096 },
+        inboundImageNormalizationQuality: { type: "number", minimum: 60, maximum: 100 },
+        inboundOcrEnabled: { type: "boolean" },
+        inboundOcrLangs: { type: "string" },
+        inboundOcrTimeoutMs: { type: "number", minimum: 5000, maximum: 120000 },
+        inboundOcrMaxTextLength: { type: "number", minimum: 200, maximum: 10000 },
+        inboundOcrLangPath: { type: "string" },
         webhookPath: { type: "string" },
         webhookApiKey: { type: "string" },
         allowFrom: {
@@ -2801,6 +3404,17 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
               inboundMaxTextLength: { type: "number", minimum: 50, maximum: 20000 },
               inboundAllowTypelessText: { type: "boolean" },
               inboundParseDebug: { type: "boolean" },
+              inboundMergeEnabled: { type: "boolean" },
+              inboundMergeWindowMs: { type: "number", minimum: 0, maximum: 10000 },
+              inboundMergeMaxMessages: { type: "number", minimum: 1, maximum: 10 },
+              inboundImageNormalizationEnabled: { type: "boolean" },
+              inboundImageNormalizationMaxEdge: { type: "number", minimum: 512, maximum: 4096 },
+              inboundImageNormalizationQuality: { type: "number", minimum: 60, maximum: 100 },
+              inboundOcrEnabled: { type: "boolean" },
+              inboundOcrLangs: { type: "string" },
+              inboundOcrTimeoutMs: { type: "number", minimum: 5000, maximum: 120000 },
+              inboundOcrMaxTextLength: { type: "number", minimum: 200, maximum: 10000 },
+              inboundOcrLangPath: { type: "string" },
               webhookPath: { type: "string" },
               webhookApiKey: { type: "string" },
               allowFrom: {
@@ -2828,6 +3442,22 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       webhookApiKey: {
         label: "Webhook API Key",
         sensitive: true,
+      },
+      inboundImageNormalizationEnabled: {
+        label: "入站图片规范化",
+        advanced: true,
+      },
+      inboundOcrEnabled: {
+        label: "入站 OCR 兜底",
+        advanced: true,
+      },
+      inboundOcrLangs: {
+        label: "入站 OCR 语言",
+        advanced: true,
+      },
+      inboundOcrLangPath: {
+        label: "入站 OCR 语言包地址",
+        advanced: true,
       },
       "management.adminSenderIds": {
         label: "管理员发送者 ID",
@@ -2901,6 +3531,11 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         previous();
         activeRouteUnregisters.delete(routeKey);
       }
+      clearPendingInboundMergesForAccount(ctx.accountId, {
+        info: (message) => ctx.log?.info(message),
+        warn: (message) => ctx.log?.warn(message),
+        error: (message) => ctx.log?.error(message),
+      });
 
       const handler = createWebhookHandler({
         accountId: account.accountId,
@@ -2937,6 +3572,11 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       const fn = activeRouteUnregisters.get(routeKey);
       if (fn) fn();
       activeRouteUnregisters.delete(routeKey);
+      clearPendingInboundMergesForAccount(ctx.accountId, {
+        info: (message) => ctx.log?.info(message),
+        warn: (message) => ctx.log?.warn(message),
+        error: (message) => ctx.log?.error(message),
+      });
       ctx.log?.info(`[vocechat] stop account=${ctx.accountId} webhookPath=${account.webhookPath}`);
       ctx.setStatus({
         accountId: ctx.accountId,
@@ -3197,6 +3837,11 @@ function renderVoceChatAccountDetailPanel(cfg: OpenClawConfig, panelId: string, 
     `入站模式：${account.inboundEnabled ? "webhook+outbound" : "outbound-only"}`,
     `确认回复：${account.inboundAckEnabled ? "开启" : "关闭"}`,
     `解析模式：${account.inboundParseMode}`,
+    `入站合并：${account.inboundMergeEnabled ? "开启" : "关闭"}`,
+    `合并窗口：${account.inboundMergeWindowMs} ms / 最多 ${account.inboundMergeMaxMessages} 条`,
+    `图片规范化：${account.inboundImageNormalizationEnabled ? "开启" : "关闭"} / ${account.inboundImageNormalizationMaxEdge}px / JPEG ${account.inboundImageNormalizationQuality}`,
+    `OCR 兜底：${account.inboundOcrEnabled ? "开启" : "关闭"} / ${account.inboundOcrLangs.join("+")} / ${account.inboundOcrTimeoutMs} ms / 最多 ${account.inboundOcrMaxTextLength} 字`,
+    `OCR 语言包：${account.inboundOcrLangPath ?? "<默认 CDN 缓存>"}`,
     `允许无类型文本：${account.inboundAllowTypelessText ? "是" : "否"}`,
     `解析调试：${account.inboundParseDebug ? "开启" : "关闭"}`,
     `阻断类型：${formatVoceChatCountPreview(account.inboundBlockedTypes)}`,

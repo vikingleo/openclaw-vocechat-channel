@@ -1,6 +1,6 @@
 # VoceChat 入站图片升级说明
 
-本文档用于把当前仓库中的“VoceChat 图片入站 -> 本地落地 -> agent 可识别”能力迁移到新机器。
+本文档用于把当前仓库中的“VoceChat 图片入站 -> 本地落地 -> 规范化 -> OCR 兜底 -> agent 可识别”能力迁移到新机器。
 
 ## 变更目标
 
@@ -10,7 +10,9 @@
 
 - 从 VoceChat webhook 原始包里解析图片附件
 - 把图片下载到本机 `OpenClaw workspace` 内
-- 将本地绝对路径、文件名、MIME 一起传给 agent
+- 把原图再规范化成更稳定的 JPEG 副本交给 agent
+- 在插件侧补一层 OCR，把可见文字提取结果一起传给 agent
+- 将本地绝对路径、文件名、MIME、OCR 文本一起传给 agent
 - 在下载失败时，把失败原因明确告诉 agent，而不是只传一串路径文本
 
 ## 仓库内代码改动
@@ -21,7 +23,9 @@
 - 解析 VoceChat 图片/附件结构，兼容存储路径 `YYYY/M/D/<uuid>`
 - 自动转换为 `/api/resource/file?file_path=...` 下载地址
 - 下载并落地到 `~/.openclaw/workspace/media/inbound/vocechat/...`
-- 生成更适合 agent 理解的入站正文
+- 额外生成 agent 友好的 JPEG 副本
+- 支持本地/远程 OCR 语言包路径
+- 生成“图片本体 + OCR 文本 + 失败兜底”三合一的入站正文
 
 ## 新机器更新步骤
 
@@ -80,6 +84,31 @@ OPENCLAW_VOCECHAT_INSTALL_PATH=/custom/path/vocechat sh ./scripts/sync-to-root-e
 - 如果 `VoceChat` 跑在 Docker 容器内，且映射到宿主 `53000 -> 3000`，这里应写宿主端口 `53000`
 - 不要想当然写容器内 `3000`，除非 `OpenClaw` 与容器在同一网络命名空间且该地址真实可达
 
+#### 可选：开启入站短窗口图文合并
+
+如果你的 VoceChat 前端会把“文字 + 图片”拆成两条消息，建议显式开启：
+
+```json
+{
+  "channels": {
+    "vocechat": {
+      "inboundMergeEnabled": true,
+      "inboundMergeWindowMs": 1200,
+      "inboundMergeMaxMessages": 3
+    }
+  }
+}
+```
+
+作用：
+
+- 同一用户在同一会话中短时间连续发出的文本和图片，会先在插件侧合并
+- 最终只向 agent 触发 1 次请求，而不是先答文本、再单独处理图片
+
+详细设计见：
+
+- [docs/vocechat-inbound-merge-design.md](./vocechat-inbound-merge-design.md)
+
 #### 图片模型配置
 
 `image` 工具不会自动沿用普通对话模型。必须显式配置：
@@ -101,6 +130,71 @@ OPENCLAW_VOCECHAT_INSTALL_PATH=/custom/path/vocechat sh ./scripts/sync-to-root-e
 - 该模型必须是宿主上已注册、且声明支持 `image` 输入的模型
 - 只配置你实际可用的视觉模型；不要随手填不存在的 provider/model
 
+#### 推荐：显式开启规范化和 OCR
+
+最稳妥的做法是把插件配置成“双轨”：
+
+- 原生图片继续交给 OpenClaw 视觉链路
+- OCR 文本作为稳定兜底一起给 agent
+
+建议配置：
+
+```json
+{
+  "channels": {
+    "vocechat": {
+      "inboundImageNormalizationEnabled": true,
+      "inboundImageNormalizationMaxEdge": 2048,
+      "inboundImageNormalizationQuality": 90,
+      "inboundOcrEnabled": true,
+      "inboundOcrLangs": "chi_sim+eng",
+      "inboundOcrTimeoutMs": 120000,
+      "inboundOcrMaxTextLength": 3000
+    }
+  }
+}
+```
+
+含义：
+
+- 规范化会把图片转成更稳定的 JPEG 副本，尽量降低 provider 报“坏图”的概率
+- OCR 会把图片中的可见文字追加到给 agent 的正文里
+- agent 能看图时优先看图；看图失败时仍可退回 OCR 文本，不至于完全失明
+
+#### 强烈推荐：使用本地 OCR 语言包目录
+
+`tesseract.js` 默认远程拉语言包，但首次下载速度和稳定性都不理想。新机器上建议直接准备本地目录，再显式配置 `inboundOcrLangPath`。
+
+推荐目录：
+
+```text
+~/.openclaw/workspace/cache/vocechat-ocr-lang
+```
+
+准备方式：
+
+```bash
+mkdir -p ~/.openclaw/workspace/cache/vocechat-ocr-lang
+curl -L https://tessdata.projectnaptha.com/4.0.0/eng.traineddata.gz -o ~/.openclaw/workspace/cache/vocechat-ocr-lang/eng.traineddata.gz
+gzip -dc ~/.openclaw/workspace/cache/vocechat-ocr-lang/eng.traineddata.gz > ~/.openclaw/workspace/cache/vocechat-ocr-lang/eng.traineddata
+curl -L https://tessdata.projectnaptha.com/4.0.0/chi_sim.traineddata.gz -o ~/.openclaw/workspace/cache/vocechat-ocr-lang/chi_sim.traineddata.gz
+gzip -dc ~/.openclaw/workspace/cache/vocechat-ocr-lang/chi_sim.traineddata.gz > ~/.openclaw/workspace/cache/vocechat-ocr-lang/chi_sim.traineddata
+```
+
+然后把配置补成：
+
+```json
+{
+  "channels": {
+    "vocechat": {
+      "inboundOcrLangPath": "/home/<你的用户名>/.openclaw/workspace/cache/vocechat-ocr-lang"
+    }
+  }
+}
+```
+
+这样 OCR 就不会在第一张图到来时临时联网拉包。
+
 ### 4. 校验配置
 
 ```bash
@@ -120,12 +214,14 @@ systemctl --user is-active openclaw-gateway.service
 
 - `webhook parsed ... attachments=1`
 - `inbound attachment stored ... path=...png`
+- `inbound attachment normalized ... path=...jpg`
+- `inbound attachment ocr ok ...`
 - `inbound media ready ... localFiles=1`
 
 可用下面命令查看：
 
 ```bash
-rg -n "attachments=|inbound attachment stored|inbound media ready|image failed|does not represent a valid image" /tmp/openclaw/openclaw-$(date +%F).log
+rg -n "attachments=|inbound attachment stored|inbound attachment normalized|inbound attachment ocr|inbound media ready|image failed|does not represent a valid image" /tmp/openclaw/openclaw-$(date +%F).log
 ```
 
 ## 落地目录说明
@@ -138,7 +234,8 @@ rg -n "attachments=|inbound attachment stored|inbound media ready|image failed|d
 
 目录内通常包含：
 
-- 图片文件本体
+- 图片原始落地文件
+- 给 agent 用的 JPEG 副本
 - `manifest.json`
 
 这样做的原因是：
@@ -146,6 +243,7 @@ rg -n "attachments=|inbound attachment stored|inbound media ready|image failed|d
 - `OpenClaw` 内置文件工具可直接访问 workspace 内路径
 - agent、OCR、后续 skill 更容易直接消费本地绝对路径
 - 避免临时 URL、鉴权 URL 失效
+- 即使上游视觉 provider 偶发失败，OCR 兜底也还在
 
 ## 已有坏会话的处理
 
@@ -171,6 +269,7 @@ rg -n "attachments=|inbound attachment stored|inbound media ready|image failed|d
 - 只允许常见图片 MIME
 - 文件名净化，避免非法路径字符
 - 按 `messageId + manifest` 做重复复用
+- OCR 文本按长度截断，避免塞爆上下文
 - 审计日志记录解析数量、落地路径、下载失败原因
 
 ## 回归验证清单
@@ -180,10 +279,10 @@ rg -n "attachments=|inbound attachment stored|inbound media ready|image failed|d
 1. `openclaw config validate` 通过
 2. `systemctl --user is-active openclaw-gateway.service` 为 `active`
 3. webhook 收到图片时日志出现 `attachments=1`
-4. 本地目录出现真实 PNG/JPG 文件，而不是只有文本路径
-5. 日志中不再出现 `Unknown model: anthropic/default`
-6. agent 能对图片内容返回正常中文说明
+4. 本地目录出现真实原图和规范化 JPEG，而不是只有文本路径
+5. 日志出现 `inbound attachment normalized` 和 `inbound attachment ocr ok` 或明确的 OCR 失败原因
+6. 即使视觉 provider 失败，agent 也能基于 OCR 文本给出不离题的中文说明
 
 ## 一句结论
 
-这次升级真正补上的，是 “VoceChat 把图片发进来之后，OpenClaw agent 能拿到本地真实图片文件” 这一段。
+这次升级真正补上的，是 “VoceChat 把图片发进来之后，OpenClaw agent 不但能拿到本地真实图片文件，还有一条稳定的 OCR 文字兜底” 这一段。

@@ -9,6 +9,9 @@
 - VoceChat 出站消息发送
 - VoceChat 入站 webhook 接收
 - VoceChat 入站图片解析、下载与本地落地
+- VoceChat 入站图片规范化为 agent 友好的 JPEG 副本
+- VoceChat 入站 OCR 文字兜底
+- VoceChat 入站短窗口图文合并
 - 私聊与群聊目标解析
 - 多账号配置
 - Telegram 卡片式管理面板
@@ -29,12 +32,15 @@
 
 1. 插件会从 webhook 原始包中提取图片附件元信息，而不再只保留文本字段。
 2. 图片资源会优先解析成真实下载 URL，并下载到 `~/.openclaw/workspace/media/inbound/vocechat/YYYY/MM/DD/<messageId>/`。
-3. 插件会把“用户文本 + 本地图片绝对路径 + 原始文件名 + MIME”一起投递给 agent。
-4. 下载失败时，仍会显式告诉 agent “用户发的是图片”，并附带资源 URL、失败原因与 `messageId`，避免退化成一串无意义路径字符串。
+3. 插件会把原图进一步规范化成更稳定的 JPEG 副本，再把“用户文本 + agent 图片路径 + 原始文件信息”一起投递给 agent。
+4. 插件会额外做一层 OCR，把可见文字提取结果写进给 agent 的正文里，但明确标注为辅助信息，不替代真实看图。
+5. 下载失败时，仍会显式告诉 agent “用户发的是图片”，并附带资源 URL、失败原因与 `messageId`，避免退化成一串无意义路径字符串。
 
 详细升级说明与新机器操作步骤见：
 
 - [docs/vocechat-inbound-image-upgrade.md](docs/vocechat-inbound-image-upgrade.md)
+- [docs/openclaw-provider-cleanup.md](docs/openclaw-provider-cleanup.md)
+- [docs/vocechat-inbound-merge-design.md](docs/vocechat-inbound-merge-design.md)
 
 ### 卡片管理
 
