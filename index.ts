@@ -131,8 +131,22 @@ type VoceChatAccountConfig = {
   groupAllowFrom?: unknown;
 };
 
+type VoceChatApprovalConfig = {
+  enabled?: boolean;
+  stateFile?: string;
+  notifyAdminSenderIds?: unknown;
+  fanoutToAdmins?: boolean;
+  fanoutToSession?: boolean;
+  gatewayUrl?: string;
+  gatewayToken?: string;
+  gatewayPassword?: string;
+  reconnectBaseMs?: number;
+  reconnectMaxMs?: number;
+};
+
 type VoceChatChannelConfig = VoceChatAccountConfig & {
   accounts?: Record<string, VoceChatAccountConfig>;
+  approvals?: VoceChatApprovalConfig;
 };
 
 type VoceChatQuickTargets = {
@@ -188,6 +202,54 @@ type TargetKind = "user" | "group";
 type ParsedTarget = {
   kind: TargetKind;
   id: string;
+};
+
+type VoceChatApprovalRecipient = {
+  accountId: string;
+  target: string;
+  source: "session" | "admin";
+};
+
+type VoceChatApprovalStatus = "pending" | "resolved" | "expired";
+
+type ApprovalRequestSummary = {
+  command?: string | null;
+  cwd?: string | null;
+  host?: string | null;
+  agentId?: string | null;
+  sessionKey?: string | null;
+  turnSourceChannel?: string | null;
+  turnSourceTo?: string | null;
+  turnSourceAccountId?: string | null;
+};
+
+type VoceChatApprovalRequestedEvent = {
+  id: string;
+  request: ApprovalRequestSummary;
+  createdAtMs: number;
+  expiresAtMs: number;
+};
+
+type VoceChatApprovalResolvedEvent = {
+  id: string;
+  decision: "allow-once" | "allow-always" | "deny";
+  resolvedBy?: string | null;
+  ts: number;
+  request?: ApprovalRequestSummary;
+};
+
+type StoredVoceChatApprovalRecord = {
+  approvalId: string;
+  status: VoceChatApprovalStatus;
+  recipients: VoceChatApprovalRecipient[];
+  createdAtMs: number;
+  expiresAtMs: number;
+  sentAtMs: number;
+  request: ApprovalRequestSummary;
+  decision?: "allow-once" | "allow-always" | "deny";
+  resolvedBy?: string | null;
+  resolvedAtMs?: number;
+  expiredAtMs?: number;
 };
 
 type VoceChatHttpResponse = {
@@ -248,6 +310,345 @@ const activeRouteUnregisters = new Map<string, () => void>();
 const recentOutboundMessageIds = new Map<string, number>();
 const recentInboundMessageIds = new Map<string, number>();
 const pendingInboundMerges = new Map<string, PendingInboundMerge>();
+
+class VoceChatApprovalStore {
+  private readonly filePath: string;
+
+  private readonly approvals = new Map<string, StoredVoceChatApprovalRecord>();
+
+  private loaded = false;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  async get(approvalId: string): Promise<StoredVoceChatApprovalRecord | undefined> {
+    await this.ensureLoaded();
+    return this.approvals.get(approvalId);
+  }
+
+  async upsert(record: StoredVoceChatApprovalRecord): Promise<void> {
+    await this.ensureLoaded();
+    this.approvals.set(record.approvalId, record);
+    await this.persist();
+  }
+
+  async update(
+    approvalId: string,
+    updater: (current: StoredVoceChatApprovalRecord) => StoredVoceChatApprovalRecord,
+  ): Promise<StoredVoceChatApprovalRecord | undefined> {
+    await this.ensureLoaded();
+    const current = this.approvals.get(approvalId);
+    if (!current) return undefined;
+    const next = updater(current);
+    this.approvals.set(approvalId, next);
+    await this.persist();
+    return next;
+  }
+
+  async listExpiredPending(nowMs: number): Promise<StoredVoceChatApprovalRecord[]> {
+    await this.ensureLoaded();
+    return [...this.approvals.values()].filter((record) => record.status === "pending" && record.expiresAtMs <= nowMs);
+  }
+
+  private async ensureLoaded(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
+    try {
+      const raw = await fs.readFile(this.filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const approvals = asRecord(parsed?.approvals);
+      for (const record of Object.values(approvals)) {
+        const approval = asStoredVoceChatApprovalRecord(record);
+        if (approval) this.approvals.set(approval.approvalId, approval);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  private async persist(): Promise<void> {
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeJsonFileAtomically(this.filePath, {
+      version: 1,
+      approvals: Object.fromEntries(this.approvals.entries()),
+    });
+  }
+}
+
+class VoceChatApprovalForwarderService {
+  private readonly cfg: OpenClawConfig;
+
+  private readonly logger: {
+    info(message: string): void;
+    warn(message: string): void;
+    error(message: string): void;
+    debug?(message: string): void;
+  };
+
+  private readonly version: string;
+
+  private readonly store: VoceChatApprovalStore;
+
+  private socket: WebSocket | null = null;
+
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private reconnectAttempt = 0;
+
+  private shouldStop = false;
+
+  private connectRequestId: string | null = null;
+
+  private expiryTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(params: {
+    cfg: OpenClawConfig;
+    logger: { info(message: string): void; warn(message: string): void; error(message: string): void; debug?(message: string): void };
+    version: string;
+  }) {
+    this.cfg = params.cfg;
+    this.logger = params.logger;
+    this.version = params.version;
+    this.store = new VoceChatApprovalStore(resolveVoceChatApprovalStateFile(this.cfg));
+  }
+
+  start(): void {
+    const approvalCfg = resolveVoceChatApprovalSettings(this.cfg);
+    if (!approvalCfg.enabled) {
+      this.logger.info("[vocechat] approval forwarder disabled");
+      return;
+    }
+    this.logger.info(`[vocechat] approval forwarder enabled stateFile=${approvalCfg.stateFile}`);
+    this.shouldStop = false;
+    this.connect();
+    this.expiryTimer = setInterval(() => {
+      void this.processExpired();
+    }, 15_000);
+    this.expiryTimer.unref?.();
+  }
+
+  stop(): void {
+    this.shouldStop = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.expiryTimer) {
+      clearInterval(this.expiryTimer);
+      this.expiryTimer = null;
+    }
+    this.socket?.close();
+    this.socket = null;
+  }
+
+  private connect(): void {
+    const runtime = resolveVoceChatApprovalGatewayRuntime(this.cfg);
+    const WebSocketCtor = globalThis.WebSocket;
+    if (!WebSocketCtor) {
+      this.logger.error("[vocechat] approval forwarder unavailable: runtime WebSocket is missing");
+      return;
+    }
+
+    const socket = new WebSocketCtor(runtime.url);
+    this.socket = socket;
+
+    socket.addEventListener("open", () => {
+      this.reconnectAttempt = 0;
+      this.connectRequestId = randomUUID();
+      this.sendFrame({
+        type: "req",
+        id: this.connectRequestId,
+        method: "connect",
+        params: {
+          minProtocol: 3,
+          maxProtocol: 3,
+          role: "operator",
+          scopes: ["operator.approvals"],
+          client: {
+            id: "vocechat-approval-forwarder",
+            displayName: "VoceChat Approval Forwarder",
+            version: this.version,
+            platform: `${os.platform()}-${os.release()}`,
+            mode: "backend",
+            instanceId: os.hostname(),
+          },
+          auth: {
+            ...(runtime.token ? { token: runtime.token } : {}),
+            ...(runtime.password ? { password: runtime.password } : {}),
+          },
+        },
+      });
+    });
+
+    socket.addEventListener("message", (event) => {
+      void this.handleSocketMessage(event.data);
+    });
+
+    socket.addEventListener("close", (event) => {
+      this.logger.warn(`[vocechat] approval gateway disconnected: ${event.reason || `close code ${event.code}`}`);
+      this.socket = null;
+      if (!this.shouldStop) this.scheduleReconnect();
+    });
+
+    socket.addEventListener("error", () => {
+      this.logger.warn("[vocechat] approval gateway socket error");
+    });
+  }
+
+  private async handleSocketMessage(data: unknown): Promise<void> {
+    try {
+      const text = await readWebSocketPayloadText(data);
+      if (!text) return;
+      const frame = JSON.parse(text) as Record<string, unknown>;
+      const type = normalizeString(frame.type);
+      if (type === "res") {
+        if (normalizeString(frame.id) === this.connectRequestId) {
+          if (frame.ok === false) {
+            throw new Error(normalizeString(asRecord(frame.error).message) || "approval gateway connect failed");
+          }
+          this.logger.info("[vocechat] approval gateway connected");
+        }
+        return;
+      }
+      if (type !== "event") return;
+      const eventName = normalizeString(frame.event);
+      if (eventName === "exec.approval.requested") {
+        await this.handleRequested(frame.payload as VoceChatApprovalRequestedEvent);
+        return;
+      }
+      if (eventName === "exec.approval.resolved") {
+        await this.handleResolved(frame.payload as VoceChatApprovalResolvedEvent);
+      }
+    } catch (error) {
+      this.logger.error(`[vocechat] approval message handling failed: ${String(error)}`);
+    }
+  }
+
+  private async handleRequested(event: VoceChatApprovalRequestedEvent): Promise<void> {
+    const approvalId = normalizeString(event?.id);
+    if (!approvalId) return;
+
+    const existing = await this.store.get(approvalId);
+    if (existing?.status === "pending") {
+      this.logger.info(`[vocechat] skip duplicate approval ${approvalId}`);
+      return;
+    }
+
+    const recipients = resolveVoceChatApprovalRecipients(this.cfg, event);
+    if (recipients.length === 0) {
+      this.logger.debug?.(`[vocechat] approval ${approvalId} has no vocechat recipients`);
+      return;
+    }
+
+    const text = renderVoceChatRequestedApproval(event);
+    const successfulRecipients: VoceChatApprovalRecipient[] = [];
+    for (const recipient of recipients) {
+      try {
+        await sendVoceChatMessage({
+          cfg: this.cfg,
+          accountId: recipient.accountId,
+          to: recipient.target,
+          text,
+        } as ChannelOutboundContext);
+        successfulRecipients.push(recipient);
+      } catch (error) {
+        this.logger.warn(
+          `[vocechat] approval notify failed id=${approvalId} account=${recipient.accountId} target=${recipient.target} err=${String(error)}`,
+        );
+      }
+    }
+
+    if (successfulRecipients.length === 0) return;
+    await this.store.upsert({
+      approvalId,
+      status: "pending",
+      recipients: successfulRecipients,
+      createdAtMs: Number(event.createdAtMs) || Date.now(),
+      expiresAtMs: Number(event.expiresAtMs) || Date.now() + 180_000,
+      sentAtMs: Date.now(),
+      request: sanitizeApprovalRequest(event.request),
+    });
+    this.logger.info(`[vocechat] approval ${approvalId} forwarded to ${successfulRecipients.length} vocechat recipients`);
+  }
+
+  private async handleResolved(event: VoceChatApprovalResolvedEvent): Promise<void> {
+    const approvalId = normalizeString(event?.id);
+    if (!approvalId) return;
+    const record = await this.store.get(approvalId);
+    if (!record) return;
+
+    const text = renderVoceChatResolvedApproval(record, event);
+    for (const recipient of record.recipients) {
+      try {
+        await sendVoceChatMessage({
+          cfg: this.cfg,
+          accountId: recipient.accountId,
+          to: recipient.target,
+          text,
+        } as ChannelOutboundContext);
+      } catch (error) {
+        this.logger.warn(
+          `[vocechat] approval resolved notify failed id=${approvalId} account=${recipient.accountId} target=${recipient.target} err=${String(error)}`,
+        );
+      }
+    }
+
+    await this.store.update(approvalId, (current) => ({
+      ...current,
+      status: "resolved",
+      decision: event.decision,
+      resolvedBy: event.resolvedBy ?? null,
+      resolvedAtMs: Number(event.ts) || Date.now(),
+    }));
+  }
+
+  private async processExpired(): Promise<void> {
+    const expired = await this.store.listExpiredPending(Date.now());
+    for (const record of expired) {
+      const text = renderVoceChatExpiredApproval(record);
+      for (const recipient of record.recipients) {
+        try {
+          await sendVoceChatMessage({
+            cfg: this.cfg,
+            accountId: recipient.accountId,
+            to: recipient.target,
+            text,
+          } as ChannelOutboundContext);
+        } catch (error) {
+          this.logger.warn(
+            `[vocechat] approval expired notify failed id=${record.approvalId} account=${recipient.accountId} target=${recipient.target} err=${String(error)}`,
+          );
+        }
+      }
+      await this.store.update(record.approvalId, (current) => ({
+        ...current,
+        status: "expired",
+        expiredAtMs: Date.now(),
+      }));
+    }
+  }
+
+  private scheduleReconnect(): void {
+    const runtime = resolveVoceChatApprovalGatewayRuntime(this.cfg);
+    const delayMs = Math.min(runtime.reconnectMaxMs, Math.round(runtime.reconnectBaseMs * 2 ** this.reconnectAttempt));
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delayMs);
+    this.reconnectTimer.unref?.();
+  }
+
+  private sendFrame(frame: Record<string, unknown>): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      throw new Error("approval gateway socket not connected");
+    }
+    this.socket.send(JSON.stringify(frame));
+  }
+}
 
 function setVoceChatRuntime(runtime: PluginRuntime): void {
   runtimeRef = runtime;
@@ -1079,6 +1480,261 @@ function resolveVoceChatManagement(cfg: OpenClawConfig): VoceChatManagementConfi
     panelStateFile,
     quickTargets: resolveVoceChatQuickTargets(cfg, management, adminSenderIds),
   };
+}
+
+function resolveVoceChatApprovalStateFile(cfg: OpenClawConfig): string {
+  const section = getChannelConfig(cfg);
+  const approvalSection = asRecord((section as Record<string, unknown>).approvals);
+  const configured = normalizeString(approvalSection.stateFile);
+  if (configured) return configured;
+  const management = resolveVoceChatManagement(cfg);
+  return path.join(path.dirname(management.panelStateFile), "approval-state.json");
+}
+
+function resolveVoceChatApprovalSettings(cfg: OpenClawConfig): {
+  enabled: boolean;
+  stateFile: string;
+  notifyAdminTargets: string[];
+  fanoutToAdmins: boolean;
+  fanoutToSession: boolean;
+} {
+  const section = getChannelConfig(cfg);
+  const approvalSection = asRecord((section as Record<string, unknown>).approvals);
+  const management = resolveVoceChatManagement(cfg);
+  const adminSenderIds = parseAllowEntries(
+    approvalSection.notifyAdminSenderIds ?? management.adminSenderIds,
+  );
+
+  return {
+    enabled: parseBoolean(approvalSection.enabled, true),
+    stateFile: resolveVoceChatApprovalStateFile(cfg),
+    notifyAdminTargets: adminSenderIds
+      .map(parseVoceChatApprovalTargetFromSenderId)
+      .filter((entry): entry is string => Boolean(entry)),
+    fanoutToAdmins: parseBoolean(approvalSection.fanoutToAdmins, true),
+    fanoutToSession: parseBoolean(approvalSection.fanoutToSession, true),
+  };
+}
+
+function resolveVoceChatApprovalGatewayRuntime(cfg: OpenClawConfig): {
+  url: string;
+  token: string | null;
+  password: string | null;
+  reconnectBaseMs: number;
+  reconnectMaxMs: number;
+} {
+  const section = getChannelConfig(cfg);
+  const approvalSection = asRecord((section as Record<string, unknown>).approvals);
+  const gateway = asRecord(cfg.gateway);
+  const auth = asRecord(gateway.auth);
+  const remote = asRecord(gateway.remote);
+  const gatewayPort = typeof gateway.port === "number" && Number.isFinite(gateway.port) ? gateway.port : Number(gateway.port) || 18789;
+  const rawUrl =
+    normalizeString(approvalSection.gatewayUrl)
+    || normalizeString(remote.url)
+    || `ws://127.0.0.1:${gatewayPort}`;
+
+  return {
+    url: normalizeGatewayWsUrl(rawUrl),
+    token:
+      normalizeString(approvalSection.gatewayToken)
+      || normalizeString(auth.token)
+      || normalizeString(remote.token)
+      || null,
+    password:
+      normalizeString(approvalSection.gatewayPassword)
+      || normalizeString(auth.password)
+      || normalizeString(remote.password)
+      || null,
+    reconnectBaseMs: parseBoundedInt(approvalSection.reconnectBaseMs, 1000, 250, 60000),
+    reconnectMaxMs: parseBoundedInt(approvalSection.reconnectMaxMs, 15000, 1000, 300000),
+  };
+}
+
+function normalizeGatewayWsUrl(rawUrl: string): string {
+  const parsed = new URL(rawUrl);
+  if (parsed.protocol === "http:") parsed.protocol = "ws:";
+  if (parsed.protocol === "https:") parsed.protocol = "wss:";
+  return parsed.toString();
+}
+
+function parseVoceChatApprovalTargetFromSenderId(raw: string): string | null {
+  const normalized = normalizeIdentity(raw);
+  if (!normalized.startsWith("vocechat:")) return null;
+  return parseVoceChatApprovalTarget(normalized.slice("vocechat:".length));
+}
+
+function parseVoceChatApprovalTarget(raw: string): string | null {
+  const parsed = parseTarget(raw);
+  if (!parsed) return null;
+  return `${parsed.kind}:${parsed.id}`;
+}
+
+function resolveVoceChatApprovalRecipients(
+  cfg: OpenClawConfig,
+  event: VoceChatApprovalRequestedEvent,
+): VoceChatApprovalRecipient[] {
+  const approvalCfg = resolveVoceChatApprovalSettings(cfg);
+  const dedup = new Map<string, VoceChatApprovalRecipient>();
+
+  const addRecipient = (recipient: VoceChatApprovalRecipient | null) => {
+    if (!recipient) return;
+    dedup.set(`${recipient.accountId}:${recipient.target}`, recipient);
+  };
+
+  if (approvalCfg.fanoutToSession) {
+    const sessionChannel = normalizeString(event.request?.turnSourceChannel).toLowerCase();
+    if (sessionChannel === "vocechat") {
+      const target = parseVoceChatApprovalTarget(
+        normalizeString(event.request?.turnSourceTo).replace(/^vocechat:/i, ""),
+      );
+      if (target) {
+        addRecipient({
+          accountId: normalizeAccountId(event.request?.turnSourceAccountId),
+          target,
+          source: "session",
+        });
+      }
+    }
+  }
+
+  if (approvalCfg.fanoutToAdmins) {
+    for (const target of approvalCfg.notifyAdminTargets) {
+      addRecipient({
+        accountId: DEFAULT_ACCOUNT_ID,
+        target,
+        source: "admin",
+      });
+    }
+  }
+
+  return [...dedup.values()];
+}
+
+function sanitizeApprovalRequest(raw: ApprovalRequestSummary | undefined | null): ApprovalRequestSummary {
+  const request = asRecord(raw);
+  return {
+    command: normalizeString(request.command) || null,
+    cwd: normalizeString(request.cwd) || null,
+    host: normalizeString(request.host) || null,
+    agentId: normalizeString(request.agentId) || null,
+    sessionKey: normalizeString(request.sessionKey) || null,
+    turnSourceChannel: normalizeString(request.turnSourceChannel) || null,
+    turnSourceTo: normalizeString(request.turnSourceTo) || null,
+    turnSourceAccountId: normalizeString(request.turnSourceAccountId) || null,
+  };
+}
+
+function asStoredVoceChatApprovalRecord(raw: unknown): StoredVoceChatApprovalRecord | null {
+  const record = asRecord(raw);
+  const approvalId = normalizeString(record.approvalId);
+  if (!approvalId) return null;
+  const recipientRows = Array.isArray(record.recipients) ? record.recipients : [];
+  const recipients = recipientRows
+    .map((entry) => {
+      const item = asRecord(entry);
+      const accountId = normalizeAccountId(normalizeString(item.accountId));
+      const target = parseVoceChatApprovalTarget(normalizeString(item.target));
+      const source = normalizeString(item.source) === "session" ? "session" : "admin";
+      if (!target) return null;
+      return { accountId, target, source } as VoceChatApprovalRecipient;
+    })
+    .filter((entry): entry is VoceChatApprovalRecipient => Boolean(entry));
+  if (recipients.length === 0) return null;
+
+  const statusRaw = normalizeString(record.status);
+  const status: VoceChatApprovalStatus =
+    statusRaw === "resolved" || statusRaw === "expired" ? statusRaw : "pending";
+
+  return {
+    approvalId,
+    status,
+    recipients,
+    createdAtMs: Number(record.createdAtMs) || Date.now(),
+    expiresAtMs: Number(record.expiresAtMs) || Date.now() + 180_000,
+    sentAtMs: Number(record.sentAtMs) || Date.now(),
+    request: sanitizeApprovalRequest(record.request as ApprovalRequestSummary | undefined),
+    decision: normalizeApprovalDecision(record.decision),
+    resolvedBy: normalizeString(record.resolvedBy) || null,
+    resolvedAtMs: Number(record.resolvedAtMs) || undefined,
+    expiredAtMs: Number(record.expiredAtMs) || undefined,
+  };
+}
+
+function normalizeApprovalDecision(value: unknown): "allow-once" | "allow-always" | "deny" | undefined {
+  const normalized = normalizeString(value);
+  if (normalized === "allow-once" || normalized === "allow-always" || normalized === "deny") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function renderVoceChatRequestedApproval(event: VoceChatApprovalRequestedEvent): string {
+  const request = sanitizeApprovalRequest(event.request);
+  const approvalId = normalizeString(event.id);
+  const sourceChannel = request.turnSourceChannel || "unknown";
+  const sourceTo = request.turnSourceTo || "<未知>";
+  const expiresAt = event.expiresAtMs ? new Date(event.expiresAtMs).toLocaleString("zh-CN", { hour12: false }) : "未知";
+  const command = request.command || "<缺失>";
+  return [
+    "执行审批请求",
+    "",
+    `审批 ID：\`${approvalId}\``,
+    `来源渠道：${sourceChannel}`,
+    `来源会话：${sourceTo}`,
+    `Agent：${request.agentId || "<未知>"}`,
+    `主机：${request.host || "<未知>"}`,
+    `工作目录：${request.cwd || "<未知>"}`,
+    `过期时间：${expiresAt}`,
+    "",
+    "命令预览：",
+    "```text",
+    command,
+    "```",
+    "",
+    "在 VoceChat 里直接发送以下命令即可审批：",
+    `- \`/approve ${approvalId} allow-once\``,
+    `- \`/approve ${approvalId} allow-always\``,
+    `- \`/approve ${approvalId} deny\``,
+  ].join("\n");
+}
+
+function renderVoceChatResolvedApproval(
+  record: StoredVoceChatApprovalRecord,
+  event: VoceChatApprovalResolvedEvent,
+): string {
+  const decision = normalizeApprovalDecision(event.decision) || record.decision || "deny";
+  const labels: Record<string, string> = {
+    "allow-once": "已允许（一次）",
+    "allow-always": "已允许（始终）",
+    "deny": "已拒绝",
+  };
+  return [
+    "执行审批结果",
+    "",
+    `审批 ID：\`${record.approvalId}\``,
+    `结果：${labels[decision] ?? decision}`,
+    `处理人：${normalizeString(event.resolvedBy) || "<未知>"}`,
+    `命令：\`${record.request.command || "<缺失>"}\``,
+  ].join("\n");
+}
+
+function renderVoceChatExpiredApproval(record: StoredVoceChatApprovalRecord): string {
+  return [
+    "执行审批结果",
+    "",
+    `审批 ID：\`${record.approvalId}\``,
+    "结果：审批已过期",
+    `命令：\`${record.request.command || "<缺失>"}\``,
+  ].join("\n");
+}
+
+async function readWebSocketPayloadText(data: unknown): Promise<string> {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
+  if (data instanceof Blob) return await data.text();
+  return String(data ?? "");
 }
 
 function resolveVoceChatQuickTargets(
@@ -2410,10 +3066,6 @@ async function sendVoceChatMedia(ctx: ChannelOutboundContext): Promise<OutboundD
   });
 
   const caption = normalizeMediaCaption(ctx.text, mediaUrl);
-  if (caption) {
-    await sendVoceChatMessage({ ...ctx, text: caption });
-  }
-
   const media = await loadOutboundMediaFromUrl(mediaUrl, {
     mediaLocalRoots: Array.isArray(ctx.mediaLocalRoots) ? ctx.mediaLocalRoots : undefined,
   });
@@ -2461,6 +3113,21 @@ async function sendVoceChatMedia(ctx: ChannelOutboundContext): Promise<OutboundD
     const messageId = parseMessageId(response.body);
     rememberRecentMessage(recentOutboundMessageIds, makeMessageKey(account.accountId, messageId));
 
+    let captionMessageId: string | undefined;
+    let captionDeliveryError: string | undefined;
+    if (caption) {
+      // Caption is best-effort after media delivery so recovery retries cannot re-send text before media validation/upload succeeds.
+      try {
+        const captionDelivery = await sendVoceChatMessage({ ...ctx, text: caption });
+        captionMessageId = captionDelivery.messageId;
+      } catch (error) {
+        captionDeliveryError = error instanceof Error ? error.message : String(error);
+        ctx.log?.warn(
+          `[vocechat] media delivered but caption follow-up failed for ${target.kind}:${target.id}: ${captionDeliveryError}`,
+        );
+      }
+    }
+
     return {
       channel: CHANNEL_ID,
       messageId,
@@ -2473,6 +3140,8 @@ async function sendVoceChatMedia(ctx: ChannelOutboundContext): Promise<OutboundD
         status: response.status,
         mediaUrl,
         uploadPath,
+        captionMessageId,
+        captionDeliveryError,
       },
     };
   } finally {
@@ -4636,6 +5305,8 @@ function resolveVoceChatTelegramRuntime(cfg: OpenClawConfig): { botToken: string
   };
 }
 
+let approvalForwarderService: VoceChatApprovalForwarderService | null = null;
+
 const plugin = {
   id: CHANNEL_ID,
   name: "VoceChat Channel",
@@ -4644,6 +5315,27 @@ const plugin = {
     setVoceChatRuntime(api.runtime);
     api.registerChannel({ plugin: voceChatChannel });
     registerVoceChatManagementCommand(api);
+    api.registerService?.({
+      id: "vocechat-approval-forwarder",
+      start: async () => {
+        if (approvalForwarderService) return;
+        approvalForwarderService = new VoceChatApprovalForwarderService({
+          cfg: api.config as OpenClawConfig,
+          logger: {
+            info: (message: string) => api.logger.info(message),
+            warn: (message: string) => api.logger.warn(message),
+            error: (message: string) => api.logger.error(message),
+            debug: (message: string) => api.logger.debug?.(message),
+          },
+          version: api.version ?? "0.4.9",
+        });
+        approvalForwarderService.start();
+      },
+      stop: async () => {
+        approvalForwarderService?.stop();
+        approvalForwarderService = null;
+      },
+    });
   },
 };
 

@@ -296,6 +296,56 @@
             }
           }
         }
+      },
+      "approvals": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "stateFile": {
+            "type": "string"
+          },
+          "notifyAdminSenderIds": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "fanoutToAdmins": {
+            "type": "boolean"
+          },
+          "fanoutToSession": {
+            "type": "boolean"
+          },
+          "gatewayUrl": {
+            "type": "string"
+          },
+          "gatewayToken": {
+            "type": "string"
+          },
+          "gatewayPassword": {
+            "type": "string"
+          },
+          "reconnectBaseMs": {
+            "type": "number",
+            "minimum": 250,
+            "maximum": 60000
+          },
+          "reconnectMaxMs": {
+            "type": "number",
+            "minimum": 1000,
+            "maximum": 300000
+          }
+        }
       }
     }
   },
@@ -322,6 +372,36 @@
     },
     "management.quickTargets.groups": {
       "label": "快捷群目标",
+      "advanced": true
+    },
+    "approvals.enabled": {
+      "label": "启用审批转发",
+      "advanced": true
+    },
+    "approvals.stateFile": {
+      "label": "审批状态文件",
+      "advanced": true
+    },
+    "approvals.notifyAdminSenderIds": {
+      "label": "审批通知发送者 ID",
+      "advanced": true
+    },
+    "approvals.fanoutToAdmins": {
+      "label": "同时通知管理员",
+      "advanced": true
+    },
+    "approvals.fanoutToSession": {
+      "label": "同时通知原会话",
+      "advanced": true
+    },
+    "approvals.gatewayToken": {
+      "label": "审批网关 Token",
+      "sensitive": true,
+      "advanced": true
+    },
+    "approvals.gatewayPassword": {
+      "label": "审批网关口令",
+      "sensitive": true,
       "advanced": true
     }
   }
