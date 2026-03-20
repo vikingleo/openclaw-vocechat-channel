@@ -81,6 +81,17 @@ const IMAGE_TYPE_KEYWORDS = new Set(["image", "img", "photo", "picture", "pic", 
 
 type InboundParseMode = "legacy" | "balanced" | "strict";
 
+type VoceChatGroupConfig = {
+  enabled?: boolean;
+  allow?: boolean;
+  requireMention?: boolean;
+};
+
+type ResolvedVoceChatGroupConfig = {
+  enabled?: boolean;
+  requireMention?: boolean;
+};
+
 type VoceChatAccountConfig = {
   enabled?: boolean;
   name?: string;
@@ -114,6 +125,8 @@ type VoceChatAccountConfig = {
   inboundOcrLangPath?: string;
   webhookPath?: string;
   webhookApiKey?: string;
+  groupPolicy?: string;
+  groups?: unknown;
   allowFrom?: unknown;
   groupAllowFrom?: unknown;
 };
@@ -166,6 +179,7 @@ type ResolvedAccount = {
   inboundOcrLangPath?: string;
   webhookPath: string;
   webhookApiKey?: string;
+  groups: Record<string, ResolvedVoceChatGroupConfig>;
   allowFrom: string[];
   groupAllowFrom: string[];
 };
@@ -403,6 +417,45 @@ function parseBoolean(value: unknown, fallback: boolean): boolean {
   if (["1", "true", "yes", "on"].includes(raw)) return true;
   if (["0", "false", "no", "off"].includes(raw)) return false;
   return fallback;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildMentionRegexes(cfg: OpenClawConfig, agentId?: string): RegExp[] {
+  const root = asRecord(cfg as Record<string, unknown>);
+  const messages = asRecord(root.messages);
+  const groupChat = asRecord(messages.groupChat);
+  const patterns = parseAllowEntries(groupChat.mentionPatterns);
+
+  const normalizedAgentId = normalizeString(agentId);
+  if (normalizedAgentId) {
+    patterns.push(normalizedAgentId);
+    const agentsSection = asRecord(root.agents);
+    const agentList = Array.isArray(agentsSection.list) ? agentsSection.list : [];
+    const agentRecord = agentList.find((entry) => normalizeString(asRecord(entry).id) === normalizedAgentId);
+    if (agentRecord) {
+      const agent = asRecord(agentRecord);
+      patterns.push(normalizeString(agent.name));
+      const identity = asRecord(agent.identity);
+      patterns.push(normalizeString(identity.name));
+    }
+  }
+
+  return Array.from(new Set(patterns.map((pattern) => normalizeString(pattern)).filter(Boolean))).map((pattern) => {
+    const escaped = escapeRegExp(pattern);
+    if (/^[A-Za-z0-9_.:-]+$/.test(pattern)) {
+      return new RegExp(`(^|[^\\p{L}\\p{N}_])@?${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu");
+    }
+    return new RegExp(escaped, "u");
+  });
+}
+
+function matchesMentionPatterns(text: string, patterns: RegExp[]): boolean {
+  if (patterns.length === 0) return false;
+  const candidate = typeof text === "string" ? text : "";
+  return patterns.some((pattern) => pattern.test(candidate));
 }
 
 function hasOwn(obj: Record<string, unknown>, key: string): boolean {
@@ -985,9 +1038,35 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
     inboundOcrLangPath: normalizeString(merged.inboundOcrLangPath) || DEFAULT_INBOUND_OCR_LANG_PATH,
     webhookPath: normalizeWebhookPath(merged.webhookPath),
     webhookApiKey: normalizeString(merged.webhookApiKey) || undefined,
+    groups: parseVoceChatGroups(merged.groups),
     allowFrom: parseAllowEntries(merged.allowFrom),
     groupAllowFrom: parseAllowEntries(merged.groupAllowFrom),
   };
+}
+
+function parseVoceChatGroups(value: unknown): Record<string, ResolvedVoceChatGroupConfig> {
+  const groups = asRecord(value);
+  const result: Record<string, ResolvedVoceChatGroupConfig> = {};
+  for (const [groupId, raw] of Object.entries(groups)) {
+    const record = asRecord(raw);
+    const next: ResolvedVoceChatGroupConfig = {};
+    if (hasOwn(record, "enabled")) next.enabled = parseBoolean(record.enabled, true);
+    else if (hasOwn(record, "allow")) next.enabled = parseBoolean(record.allow, true);
+    if (hasOwn(record, "requireMention")) next.requireMention = parseBoolean(record.requireMention, true);
+    result[String(groupId)] = next;
+  }
+  return result;
+}
+
+function resolveVoceChatGroupConfig(
+  account: ResolvedAccount,
+  groupId?: string,
+): ResolvedVoceChatGroupConfig | undefined {
+  const normalizedGroupId = normalizeString(groupId);
+  if (normalizedGroupId && hasOwn(account.groups, normalizedGroupId)) {
+    return account.groups[normalizedGroupId];
+  }
+  return account.groups["*"];
 }
 
 function resolveVoceChatManagement(cfg: OpenClawConfig): VoceChatManagementConfig {
@@ -2819,13 +2898,12 @@ function resolveAckReactionScope(cfg: OpenClawConfig): "group-mentions" | "group
 function shouldSendAckReaction(
   scope: "group-mentions" | "group-all" | "direct" | "all",
   event: InboundEvent,
+  wasMentioned: boolean,
 ): boolean {
   if (scope === "all") return true;
   if (scope === "direct") return event.chatType === "direct";
   if (scope === "group-all") return event.chatType === "group";
-  // VoceChat webhook does not provide normalized mention metadata.
-  // Fallback: treat group-mentions as group chats for immediate "I saw this" feedback.
-  if (scope === "group-mentions") return event.chatType === "group";
+  if (scope === "group-mentions") return event.chatType === "group" && wasMentioned;
   return false;
 }
 
@@ -2894,9 +2972,44 @@ async function processInboundEvent(params: {
   let event = params.event;
   if (!skipAcceptanceCheck && !acceptInboundEventForProcessing({ account, event, logger })) return;
 
+  const route = runtime.channel.routing.resolveAgentRoute({
+    cfg,
+    channel: CHANNEL_ID,
+    accountId: account.accountId,
+    peer: {
+      kind: event.chatType === "group" ? "group" : "direct",
+      id: event.conversationId,
+    },
+  });
+  const groupConfig = event.chatType === "group" ? resolveVoceChatGroupConfig(account, event.groupId) : undefined;
+  if (event.chatType === "group" && groupConfig?.enabled === false) {
+    logger?.info?.(
+      `[vocechat] skip group event: group disabled account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+    );
+    return;
+  }
+  const requireMention = event.chatType === "group" ? groupConfig?.requireMention !== false : false;
+  const mentionRegexes = requireMention ? buildMentionRegexes(cfg, route.agentId) : [];
+  const canDetectMention = !requireMention || mentionRegexes.length > 0;
+  const wasMentioned = event.chatType !== "group" || !requireMention
+    ? true
+    : matchesMentionPatterns(event.originalText || event.text, mentionRegexes);
+  if (event.chatType === "group" && requireMention && !canDetectMention) {
+    logger?.warn?.(
+      `[vocechat] skip group event: no mention patterns available account=${account.accountId} group=${event.groupId ?? event.conversationId} agent=${route.agentId}`,
+    );
+    return;
+  }
+  if (event.chatType === "group" && requireMention && !wasMentioned) {
+    logger?.info?.(
+      `[vocechat] skip group event: no mention account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+    );
+    return;
+  }
+
   const ackReaction = resolveAckReaction(cfg, account.accountId);
   const ackReactionScope = resolveAckReactionScope(cfg);
-  if (ackReaction && shouldSendAckReaction(ackReactionScope, event)) {
+  if (ackReaction && shouldSendAckReaction(ackReactionScope, event, wasMentioned)) {
     try {
       await sendVoceChatReaction({
         cfg,
@@ -2944,16 +3057,6 @@ async function processInboundEvent(params: {
   logger?.info?.(
     `[vocechat] inbound media ready account=${account.accountId} mid=${event.messageId} localFiles=${event.localFiles.length} attachmentCount=${event.attachments.length}`,
   );
-
-  const route = runtime.channel.routing.resolveAgentRoute({
-    cfg,
-    channel: CHANNEL_ID,
-    accountId: account.accountId,
-    peer: {
-      kind: event.chatType === "group" ? "group" : "direct",
-      id: event.conversationId,
-    },
-  });
   logger?.info?.(
     `[vocechat] inbound route agent=${route.agentId} sessionKey=${route.sessionKey} account=${route.accountId}`,
   );
@@ -3007,6 +3110,7 @@ async function processInboundEvent(params: {
     ChatType: event.chatType,
     ConversationLabel: conversationLabel,
     GroupSubject: event.chatType === "group" ? `group:${event.groupId ?? event.conversationId}` : undefined,
+    WasMentioned: event.chatType === "group" ? wasMentioned : undefined,
     SenderId: event.fromUid,
     Provider: CHANNEL_ID,
     Surface: CHANNEL_ID,
@@ -3367,6 +3471,19 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         inboundOcrLangPath: { type: "string" },
         webhookPath: { type: "string" },
         webhookApiKey: { type: "string" },
+        groupPolicy: { type: "string", enum: ["open", "allowlist", "disabled"] },
+        groups: {
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enabled: { type: "boolean" },
+              allow: { type: "boolean" },
+              requireMention: { type: "boolean" },
+            },
+          },
+        },
         allowFrom: {
           oneOf: [
             { type: "string" },
@@ -3433,6 +3550,19 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
               inboundOcrLangPath: { type: "string" },
               webhookPath: { type: "string" },
               webhookApiKey: { type: "string" },
+              groupPolicy: { type: "string", enum: ["open", "allowlist", "disabled"] },
+              groups: {
+                type: "object",
+                additionalProperties: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    enabled: { type: "boolean" },
+                    allow: { type: "boolean" },
+                    requireMention: { type: "boolean" },
+                  },
+                },
+              },
               allowFrom: {
                 oneOf: [
                   { type: "string" },
