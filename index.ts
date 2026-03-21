@@ -468,7 +468,7 @@ class VoceChatApprovalForwarderService {
           role: "operator",
           scopes: ["operator.approvals"],
           client: {
-            id: "vocechat-approval-forwarder",
+            id: "gateway-client",
             displayName: "VoceChat Approval Forwarder",
             version: this.version,
             platform: `${os.platform()}-${os.release()}`,
