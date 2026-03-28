@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- 新增 `/writerflow` 聊天命令，返回 `main` 监督 `writer` 处理小说章节的流程说明、发令模板与状态追问模板
+- 新增 `/writerstatus` 聊天命令，返回 `writer` 小说监督任务的状态追问模板与常见状态释义
+- 新增 `/writerreview` 聊天命令，返回要求 `main` 写具体返工意见的模板，避免空泛编审意见
+- 新增 `/writerapprove` 聊天命令，返回要求 `main` 在通过编审后执行 approve 并归档正式目录的模板
+- 新增 `/writertask` 聊天命令，返回要求 `main` 为章节先创建监督 task 并回报 task id/路径的模板
+
 ## 0.4.9 - 2026-03-14
 
 - 新增 VoceChat 入站图片解析，支持从 webhook 原始包提取图片附件元信息

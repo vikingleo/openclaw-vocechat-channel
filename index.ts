@@ -134,6 +134,8 @@ type VoceChatAccountConfig = {
 type VoceChatApprovalConfig = {
   enabled?: boolean;
   stateFile?: string;
+  publicBaseUrl?: string;
+  routePath?: string;
   notifyAdminSenderIds?: unknown;
   fanoutToAdmins?: boolean;
   fanoutToSession?: boolean;
@@ -246,6 +248,7 @@ type StoredVoceChatApprovalRecord = {
   expiresAtMs: number;
   sentAtMs: number;
   request: ApprovalRequestSummary;
+  actionTokens?: Partial<Record<"allow-once" | "allow-always" | "deny", string>>;
   decision?: "allow-once" | "allow-always" | "deny";
   resolvedBy?: string | null;
   resolvedAtMs?: number;
@@ -351,6 +354,20 @@ class VoceChatApprovalStore {
     return [...this.approvals.values()].filter((record) => record.status === "pending" && record.expiresAtMs <= nowMs);
   }
 
+  async findByActionToken(
+    token: string,
+  ): Promise<{ record: StoredVoceChatApprovalRecord; decision: "allow-once" | "allow-always" | "deny" } | undefined> {
+    await this.ensureLoaded();
+    for (const record of this.approvals.values()) {
+      const tokens = record.actionTokens;
+      if (!tokens) continue;
+      if (tokens["allow-once"] === token) return { record, decision: "allow-once" };
+      if (tokens["allow-always"] === token) return { record, decision: "allow-always" };
+      if (tokens["deny"] === token) return { record, decision: "deny" };
+    }
+    return undefined;
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
@@ -404,6 +421,8 @@ class VoceChatApprovalForwarderService {
 
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
 
+  private approvalRouteUnregister: (() => void) | null = null;
+
   constructor(params: {
     cfg: OpenClawConfig;
     logger: { info(message: string): void; warn(message: string): void; error(message: string): void; debug?(message: string): void };
@@ -422,6 +441,7 @@ class VoceChatApprovalForwarderService {
       return;
     }
     this.logger.info(`[vocechat] approval forwarder enabled stateFile=${approvalCfg.stateFile}`);
+    this.registerApprovalRoute(approvalCfg);
     this.shouldStop = false;
     this.connect();
     this.expiryTimer = setInterval(() => {
@@ -439,6 +459,10 @@ class VoceChatApprovalForwarderService {
     if (this.expiryTimer) {
       clearInterval(this.expiryTimer);
       this.expiryTimer = null;
+    }
+    if (this.approvalRouteUnregister) {
+      this.approvalRouteUnregister();
+      this.approvalRouteUnregister = null;
     }
     this.socket?.close();
     this.socket = null;
@@ -543,7 +567,18 @@ class VoceChatApprovalForwarderService {
       return;
     }
 
-    const text = renderVoceChatRequestedApproval(event);
+    const approvalCfg = resolveVoceChatApprovalSettings(this.cfg);
+    const actionTokens = approvalCfg.publicBaseUrl ? createApprovalActionTokens() : undefined;
+    const text = renderVoceChatRequestedApproval(
+      event,
+      actionTokens
+        ? {
+            publicBaseUrl: approvalCfg.publicBaseUrl,
+            routePath: approvalCfg.routePath,
+            actionTokens,
+          }
+        : undefined,
+    );
     const successfulRecipients: VoceChatApprovalRecipient[] = [];
     for (const recipient of recipients) {
       try {
@@ -570,6 +605,7 @@ class VoceChatApprovalForwarderService {
       expiresAtMs: Number(event.expiresAtMs) || Date.now() + 180_000,
       sentAtMs: Date.now(),
       request: sanitizeApprovalRequest(event.request),
+      actionTokens,
     });
     this.logger.info(`[vocechat] approval ${approvalId} forwarded to ${successfulRecipients.length} vocechat recipients`);
   }
@@ -647,6 +683,164 @@ class VoceChatApprovalForwarderService {
       throw new Error("approval gateway socket not connected");
     }
     this.socket.send(JSON.stringify(frame));
+  }
+
+  private registerApprovalRoute(approvalCfg: {
+    routePath: string;
+    publicBaseUrl: string;
+  }): void {
+    if (this.approvalRouteUnregister) {
+      this.approvalRouteUnregister();
+      this.approvalRouteUnregister = null;
+    }
+    const routePath = normalizeRoutePath(approvalCfg.routePath, "/vocechat/approval");
+    const handler = this.createApprovalRouteHandler();
+    this.approvalRouteUnregister = registerPluginHttpRoute({
+      path: routePath,
+      handler: handler as any,
+      pluginId: CHANNEL_ID,
+      accountId: DEFAULT_ACCOUNT_ID,
+      replaceExisting: true,
+      log: (message) => this.logger.info(message),
+    });
+    this.logger.info(
+      `[vocechat] approval route registered path=${routePath}${approvalCfg.publicBaseUrl ? ` publicBaseUrl=${approvalCfg.publicBaseUrl}` : ""}`,
+    );
+  }
+
+  private createApprovalRouteHandler() {
+    return async (
+      req: { method?: string; url?: string },
+      res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void },
+    ) => {
+      const method = normalizeString(req.method).toUpperCase() || "GET";
+      const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+      let token = normalizeString(requestUrl.searchParams.get("token"));
+
+      if (method !== "GET" && method !== "POST") {
+        writeHtml(
+          res,
+          405,
+          renderVoceChatApprovalResultPage({
+            title: "方法不支持",
+            heading: "请求方法不支持",
+            tone: "error",
+            detail: `当前仅支持 GET 和 POST，收到：${method}`,
+          }),
+        );
+        return;
+      }
+
+      if (method === "POST") {
+        try {
+          const body = await readRequestTextWithLimit(req as any, 8 * 1024);
+          const form = new URLSearchParams(body);
+          token = normalizeString(form.get("token")) || token;
+        } catch (error) {
+          writeHtml(
+            res,
+            400,
+            renderVoceChatApprovalResultPage({
+              title: "请求无效",
+              heading: "审批提交失败",
+              tone: "error",
+              detail: `无法读取提交内容：${String(error)}`,
+            }),
+          );
+          return;
+        }
+      }
+
+      if (!token) {
+        writeHtml(
+          res,
+          400,
+          renderVoceChatApprovalResultPage({
+            title: "缺少参数",
+            heading: "缺少审批令牌",
+            tone: "error",
+            detail: "请从 VoceChat 审批消息重新点击对应链接。",
+          }),
+        );
+        return;
+      }
+
+      const runtime = getVoceChatRuntime();
+      const cfg = await runtime.config.loadConfig();
+      const store = new VoceChatApprovalStore(resolveVoceChatApprovalStateFile(cfg));
+      const matched = await store.findByActionToken(token);
+      if (!matched) {
+        writeHtml(
+          res,
+          404,
+          renderVoceChatApprovalResultPage({
+            title: "审批不存在",
+            heading: "审批链接无效或已失效",
+            tone: "error",
+            detail: "对应审批记录未找到。请返回 VoceChat 查看最新审批消息。",
+          }),
+        );
+        return;
+      }
+
+      const { record, decision } = matched;
+      const expired = record.status === "expired" || record.expiresAtMs <= Date.now();
+      if (expired && record.status === "pending") {
+        await store.update(record.approvalId, (current) => ({
+          ...current,
+          status: "expired",
+          expiredAtMs: Date.now(),
+        }));
+      }
+
+      if (record.status === "resolved") {
+        writeHtml(res, 200, renderVoceChatApprovalResolvedPage(record, decision));
+        return;
+      }
+      if (expired) {
+        writeHtml(res, 410, renderVoceChatApprovalExpiredPage(record, decision));
+        return;
+      }
+      if (method === "GET") {
+        if (decision === "allow-always") {
+          writeHtml(res, 200, renderVoceChatApprovalConfirmPage(record, decision, token));
+          return;
+        }
+        writeHtml(res, 200, renderVoceChatApprovalAutoSubmitPage(record, decision, token));
+        return;
+      }
+
+      try {
+        await submitVoceChatApprovalDecision({
+          cfg,
+          approvalId: record.approvalId,
+          decision,
+          version: this.version,
+        });
+        await store.update(record.approvalId, (current) => ({
+          ...current,
+          status: "resolved",
+          decision,
+          resolvedBy: "vocechat-link",
+          resolvedAtMs: Date.now(),
+        }));
+        writeHtml(res, 200, renderVoceChatApprovalSuccessPage(record, decision));
+      } catch (error) {
+        this.logger.error(`[vocechat] approval resolve via web failed id=${record.approvalId} err=${String(error)}`);
+        writeHtml(
+          res,
+          502,
+          renderVoceChatApprovalResultPage({
+            title: "提交失败",
+            heading: "审批提交失败",
+            tone: "error",
+            detail: String(error),
+            record,
+            decision,
+          }),
+        );
+      }
+    };
   }
 }
 
@@ -1494,6 +1688,8 @@ function resolveVoceChatApprovalStateFile(cfg: OpenClawConfig): string {
 function resolveVoceChatApprovalSettings(cfg: OpenClawConfig): {
   enabled: boolean;
   stateFile: string;
+  publicBaseUrl: string;
+  routePath: string;
   notifyAdminTargets: string[];
   fanoutToAdmins: boolean;
   fanoutToSession: boolean;
@@ -1508,6 +1704,8 @@ function resolveVoceChatApprovalSettings(cfg: OpenClawConfig): {
   return {
     enabled: parseBoolean(approvalSection.enabled, true),
     stateFile: resolveVoceChatApprovalStateFile(cfg),
+    publicBaseUrl: normalizeString(approvalSection.publicBaseUrl) || "",
+    routePath: normalizeRoutePath(approvalSection.routePath, "/vocechat/approval"),
     notifyAdminTargets: adminSenderIds
       .map(parseVoceChatApprovalTargetFromSenderId)
       .filter((entry): entry is string => Boolean(entry)),
@@ -1556,6 +1754,12 @@ function normalizeGatewayWsUrl(rawUrl: string): string {
   if (parsed.protocol === "http:") parsed.protocol = "ws:";
   if (parsed.protocol === "https:") parsed.protocol = "wss:";
   return parsed.toString();
+}
+
+function normalizeRoutePath(value: unknown, fallback: string): string {
+  const raw = normalizeString(value);
+  if (!raw) return fallback;
+  return raw.startsWith("/") ? raw : `/${raw}`;
 }
 
 function parseVoceChatApprovalTargetFromSenderId(raw: string): string | null {
@@ -1654,6 +1858,7 @@ function asStoredVoceChatApprovalRecord(raw: unknown): StoredVoceChatApprovalRec
     expiresAtMs: Number(record.expiresAtMs) || Date.now() + 180_000,
     sentAtMs: Number(record.sentAtMs) || Date.now(),
     request: sanitizeApprovalRequest(record.request as ApprovalRequestSummary | undefined),
+    actionTokens: normalizeApprovalActionTokens(record.actionTokens),
     decision: normalizeApprovalDecision(record.decision),
     resolvedBy: normalizeString(record.resolvedBy) || null,
     resolvedAtMs: Number(record.resolvedAtMs) || undefined,
@@ -1669,13 +1874,44 @@ function normalizeApprovalDecision(value: unknown): "allow-once" | "allow-always
   return undefined;
 }
 
-function renderVoceChatRequestedApproval(event: VoceChatApprovalRequestedEvent): string {
+function normalizeApprovalActionTokens(
+  value: unknown,
+): Partial<Record<"allow-once" | "allow-always" | "deny", string>> | undefined {
+  const record = asRecord(value);
+  const allowOnce = normalizeString(record["allow-once"]);
+  const allowAlways = normalizeString(record["allow-always"]);
+  const deny = normalizeString(record["deny"]);
+  if (!allowOnce && !allowAlways && !deny) return undefined;
+  return {
+    ...(allowOnce ? { "allow-once": allowOnce } : {}),
+    ...(allowAlways ? { "allow-always": allowAlways } : {}),
+    ...(deny ? { deny } : {}),
+  };
+}
+
+function createApprovalActionTokens(): Record<"allow-once" | "allow-always" | "deny", string> {
+  return {
+    "allow-once": randomUUID(),
+    "allow-always": randomUUID(),
+    "deny": randomUUID(),
+  };
+}
+
+function renderVoceChatRequestedApproval(
+  event: VoceChatApprovalRequestedEvent,
+  approvalUi?: {
+    publicBaseUrl: string;
+    routePath: string;
+    actionTokens?: Partial<Record<"allow-once" | "allow-always" | "deny", string>>;
+  },
+): string {
   const request = sanitizeApprovalRequest(event.request);
   const approvalId = normalizeString(event.id);
   const sourceChannel = request.turnSourceChannel || "unknown";
   const sourceTo = request.turnSourceTo || "<未知>";
   const expiresAt = event.expiresAtMs ? new Date(event.expiresAtMs).toLocaleString("zh-CN", { hour12: false }) : "未知";
   const command = request.command || "<缺失>";
+  const linkLines = buildVoceChatApprovalLinkLines(approvalUi);
   return [
     "执行审批请求",
     "",
@@ -1692,7 +1928,14 @@ function renderVoceChatRequestedApproval(event: VoceChatApprovalRequestedEvent):
     command,
     "```",
     "",
-    "在 VoceChat 里直接发送以下命令即可审批：",
+    ...(linkLines.length > 0
+      ? [
+          "点击下面的审批链接即可打开确认页：",
+          ...linkLines,
+          "",
+        ]
+      : []),
+    "如果链接打不开，再发送以下命令审批：",
     `- \`/approve ${approvalId} allow-once\``,
     `- \`/approve ${approvalId} allow-always\``,
     `- \`/approve ${approvalId} deny\``,
@@ -1727,6 +1970,332 @@ function renderVoceChatExpiredApproval(record: StoredVoceChatApprovalRecord): st
     "结果：审批已过期",
     `命令：\`${record.request.command || "<缺失>"}\``,
   ].join("\n");
+}
+
+function formatVoceChatApprovalDecisionLabel(decision: "allow-once" | "allow-always" | "deny"): string {
+  if (decision === "allow-once") return "允许一次";
+  if (decision === "allow-always") return "始终允许";
+  return "拒绝";
+}
+
+function formatVoceChatApprovalDecisionResultLabel(decision: "allow-once" | "allow-always" | "deny"): string {
+  if (decision === "allow-once") return "已允许（一次）";
+  if (decision === "allow-always") return "已允许（始终）";
+  return "已拒绝";
+}
+
+function formatVoceChatApprovalPageTime(value?: number): string {
+  if (!value || !Number.isFinite(value)) return "<未知>";
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function renderVoceChatApprovalConfirmPage(
+  record: StoredVoceChatApprovalRecord,
+  decision: "allow-once" | "allow-always" | "deny",
+  token: string,
+): string {
+  return renderVoceChatApprovalResultPage({
+    title: `${formatVoceChatApprovalDecisionLabel(decision)}审批`,
+    heading: "确认执行审批",
+    tone: decision === "deny" ? "warning" : "info",
+    detail: `将对审批 ${record.approvalId} 执行“${formatVoceChatApprovalDecisionLabel(decision)}”。`,
+    record,
+    decision,
+    formHtml: [
+      `<form method="post">`,
+      `<input type="hidden" name="token" value="${escapeHtml(token)}" />`,
+      `<button type="submit">${escapeHtml(`确认${formatVoceChatApprovalDecisionLabel(decision)}`)}</button>`,
+      `</form>`,
+      `<p class="hint">打开页面不会自动审批，只有点击确认按钮才会提交。</p>`,
+    ].join(""),
+  });
+}
+
+function renderVoceChatApprovalAutoSubmitPage(
+  record: StoredVoceChatApprovalRecord,
+  decision: "allow-once" | "allow-always" | "deny",
+  token: string,
+): string {
+  return renderVoceChatApprovalResultPage({
+    title: `${formatVoceChatApprovalDecisionLabel(decision)}审批`,
+    heading: "正在提交审批",
+    tone: decision === "deny" ? "warning" : "info",
+    detail: `正在执行“${formatVoceChatApprovalDecisionLabel(decision)}”，页面会自动跳转到审批结果。`,
+    record,
+    decision,
+    formHtml: [
+      `<form id="approval-submit-form" method="post">`,
+      `<input type="hidden" name="token" value="${escapeHtml(token)}" />`,
+      `<button type="submit">${escapeHtml(`继续${formatVoceChatApprovalDecisionLabel(decision)}`)}</button>`,
+      `</form>`,
+      `<p class="hint">如果没有自动跳转，再手动点一次按钮。</p>`,
+      `<script>window.addEventListener('load',function(){document.getElementById('approval-submit-form')?.submit();},{once:true});</script>`,
+    ].join(""),
+  });
+}
+
+function renderVoceChatApprovalSuccessPage(
+  record: StoredVoceChatApprovalRecord,
+  decision: "allow-once" | "allow-always" | "deny",
+): string {
+  return renderVoceChatApprovalResultPage({
+    title: "审批已提交",
+    heading: "审批已提交",
+    tone: "success",
+    detail: `已提交“${formatVoceChatApprovalDecisionLabel(decision)}”，VoceChat 会收到审批结果通知。`,
+    record,
+    decision,
+  });
+}
+
+function renderVoceChatApprovalResolvedPage(
+  record: StoredVoceChatApprovalRecord,
+  fallbackDecision: "allow-once" | "allow-always" | "deny",
+): string {
+  const decision = record.decision || fallbackDecision;
+  const detailParts = [`审批已处理为“${formatVoceChatApprovalDecisionResultLabel(decision)}”。`];
+  if (record.resolvedBy) detailParts.push(`处理人：${record.resolvedBy}`);
+  if (record.resolvedAtMs) detailParts.push(`处理时间：${formatVoceChatApprovalPageTime(record.resolvedAtMs)}`);
+  return renderVoceChatApprovalResultPage({
+    title: "审批已处理",
+    heading: "审批已处理",
+    tone: "success",
+    detail: detailParts.join(" "),
+    record,
+    decision,
+  });
+}
+
+function renderVoceChatApprovalExpiredPage(
+  record: StoredVoceChatApprovalRecord,
+  decision: "allow-once" | "allow-always" | "deny",
+): string {
+  return renderVoceChatApprovalResultPage({
+    title: "审批已过期",
+    heading: "审批已过期",
+    tone: "warning",
+    detail: `该审批已于 ${formatVoceChatApprovalPageTime(record.expiresAtMs)} 过期，无法再执行“${formatVoceChatApprovalDecisionLabel(decision)}”。`,
+    record,
+    decision,
+  });
+}
+
+function renderVoceChatApprovalResultPage(params: {
+  title: string;
+  heading: string;
+  tone: "info" | "success" | "warning" | "error";
+  detail: string;
+  record?: StoredVoceChatApprovalRecord;
+  decision?: "allow-once" | "allow-always" | "deny";
+  formHtml?: string;
+}): string {
+  const toneClass = params.tone;
+  const record = params.record;
+  const command = record?.request.command || "<缺失>";
+  const sourceChannel = record?.request.turnSourceChannel || "unknown";
+  const sourceTo = record?.request.turnSourceTo || "<未知>";
+  const decisionLabel = params.decision ? formatVoceChatApprovalDecisionLabel(params.decision) : "";
+  const metaHtml = record
+    ? [
+        `<dl class="meta">`,
+        `<div><dt>审批 ID</dt><dd>${escapeHtml(record.approvalId)}</dd></div>`,
+        `<div><dt>当前动作</dt><dd>${escapeHtml(decisionLabel || "<未指定>")}</dd></div>`,
+        `<div><dt>来源渠道</dt><dd>${escapeHtml(sourceChannel)}</dd></div>`,
+        `<div><dt>来源会话</dt><dd>${escapeHtml(sourceTo)}</dd></div>`,
+        `<div><dt>Agent</dt><dd>${escapeHtml(record.request.agentId || "<未知>")}</dd></div>`,
+        `<div><dt>主机</dt><dd>${escapeHtml(record.request.host || "<未知>")}</dd></div>`,
+        `<div><dt>工作目录</dt><dd>${escapeHtml(record.request.cwd || "<未知>")}</dd></div>`,
+        `<div><dt>过期时间</dt><dd>${escapeHtml(formatVoceChatApprovalPageTime(record.expiresAtMs))}</dd></div>`,
+        `</dl>`,
+        `<div class="command">`,
+        `<div class="label">命令预览</div>`,
+        `<pre>${escapeHtml(command)}</pre>`,
+        `</div>`,
+      ].join("")
+    : "";
+
+  return [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '<meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `<title>${escapeHtml(params.title)}</title>`,
+    "<style>",
+    "body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f7fb;color:#172033;}",
+    ".wrap{max-width:760px;margin:0 auto;padding:32px 16px 48px;}",
+    ".card{background:#fff;border-radius:18px;padding:24px;box-shadow:0 18px 50px rgba(20,32,64,.08);border:1px solid rgba(20,32,64,.08);}",
+    ".pill{display:inline-block;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.02em;}",
+    ".pill.info{background:#e8f1ff;color:#175cd3;}",
+    ".pill.success{background:#e7f8ee;color:#067647;}",
+    ".pill.warning{background:#fff4e5;color:#b54708;}",
+    ".pill.error{background:#fee4e2;color:#b42318;}",
+    "h1{margin:14px 0 10px;font-size:28px;line-height:1.2;}",
+    "p{margin:0 0 14px;line-height:1.6;}",
+    ".meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 18px;margin:22px 0 20px;}",
+    ".meta div{padding:12px 14px;border-radius:12px;background:#f8fafc;}",
+    ".meta dt{font-size:12px;color:#667085;margin-bottom:6px;}",
+    ".meta dd{margin:0;font-size:14px;word-break:break-word;}",
+    ".label{font-size:12px;color:#667085;margin-bottom:8px;}",
+    ".command{margin-top:18px;}",
+    "pre{margin:0;padding:14px;border-radius:12px;background:#101828;color:#f8fafc;overflow:auto;white-space:pre-wrap;word-break:break-word;}",
+    "form{margin-top:22px;}",
+    "button{appearance:none;border:0;border-radius:12px;padding:14px 18px;font-size:16px;font-weight:700;background:#175cd3;color:#fff;cursor:pointer;box-shadow:0 10px 24px rgba(23,92,211,.22);}",
+    "button:hover{filter:brightness(.98);}",
+    ".hint{margin-top:12px;font-size:13px;color:#667085;}",
+    "</style>",
+    "</head>",
+    "<body>",
+    '<main class="wrap"><section class="card">',
+    `<span class="pill ${toneClass}">${escapeHtml(params.heading)}</span>`,
+    `<h1>${escapeHtml(params.heading)}</h1>`,
+    `<p>${escapeHtml(params.detail)}</p>`,
+    metaHtml,
+    params.formHtml || "",
+    "</section></main>",
+    "</body>",
+    "</html>",
+  ].join("");
+}
+
+function buildVoceChatApprovalLinkLines(approvalUi?: {
+  publicBaseUrl: string;
+  routePath: string;
+  actionTokens?: Partial<Record<"allow-once" | "allow-always" | "deny", string>>;
+}): string[] {
+  const publicBaseUrl = normalizeString(approvalUi?.publicBaseUrl);
+  const routePath = normalizeString(approvalUi?.routePath);
+  const actionTokens = approvalUi?.actionTokens;
+  if (!publicBaseUrl || !routePath || !actionTokens) return [];
+
+  const allowOnce = actionTokens["allow-once"] ? buildVoceChatApprovalLink(publicBaseUrl, routePath, actionTokens["allow-once"]) : "";
+  const allowAlways = actionTokens["allow-always"] ? buildVoceChatApprovalLink(publicBaseUrl, routePath, actionTokens["allow-always"]) : "";
+  const deny = actionTokens["deny"] ? buildVoceChatApprovalLink(publicBaseUrl, routePath, actionTokens["deny"]) : "";
+  const links = [
+    allowOnce ? `[允许一次](${allowOnce})` : "",
+    allowAlways ? `[始终允许](${allowAlways})` : "",
+    deny ? `[拒绝](${deny})` : "",
+  ].filter(Boolean);
+  return links.length > 0 ? [`- ${links.join(" | ")}`] : [];
+}
+
+function buildVoceChatApprovalLink(publicBaseUrl: string, routePath: string, token: string): string {
+  const base = publicBaseUrl.replace(/\/+$/g, "");
+  const pathPart = routePath.startsWith("/") ? routePath : `/${routePath}`;
+  return `${base}${pathPart}?token=${encodeURIComponent(token)}`;
+}
+
+async function submitVoceChatApprovalDecision(params: {
+  cfg: OpenClawConfig;
+  approvalId: string;
+  decision: "allow-once" | "allow-always" | "deny";
+  version: string;
+}): Promise<void> {
+  const runtime = resolveVoceChatApprovalGatewayRuntime(params.cfg);
+  const WebSocketCtor = globalThis.WebSocket;
+  if (!WebSocketCtor) {
+    throw new Error("runtime WebSocket is missing");
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocketCtor(runtime.url);
+    const connectRequestId = randomUUID();
+    const resolveRequestId = randomUUID();
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      } catch {}
+      fn();
+    };
+
+    const timeout = setTimeout(() => {
+      finish(() => reject(new Error("approval gateway request timed out")));
+    }, 10_000);
+    timeout.unref?.();
+
+    socket.addEventListener("open", () => {
+      socket.send(
+        JSON.stringify({
+          type: "req",
+          id: connectRequestId,
+          method: "connect",
+          params: {
+            minProtocol: 3,
+            maxProtocol: 3,
+            role: "operator",
+            scopes: ["operator.approvals"],
+            client: {
+              id: "gateway-client",
+              displayName: "VoceChat Approval Web",
+              version: params.version,
+              platform: `${os.platform()}-${os.release()}`,
+              mode: "backend",
+              instanceId: os.hostname(),
+            },
+            auth: {
+              ...(runtime.token ? { token: runtime.token } : {}),
+              ...(runtime.password ? { password: runtime.password } : {}),
+            },
+          },
+        }),
+      );
+    });
+
+    socket.addEventListener("message", (event) => {
+      void (async () => {
+        try {
+          const text = await readWebSocketPayloadText(event.data);
+          if (!text) return;
+          const frame = JSON.parse(text) as Record<string, unknown>;
+          if (normalizeString(frame.type) !== "res") return;
+          const frameId = normalizeString(frame.id);
+          if (frameId === connectRequestId) {
+            if (frame.ok === false) {
+              finish(() => reject(new Error(normalizeString(asRecord(frame.error).message) || "approval gateway connect failed")));
+              return;
+            }
+            socket.send(
+              JSON.stringify({
+                type: "req",
+                id: resolveRequestId,
+                method: "exec.approval.resolve",
+                params: {
+                  id: params.approvalId,
+                  decision: params.decision,
+                },
+              }),
+            );
+            return;
+          }
+          if (frameId === resolveRequestId) {
+            if (frame.ok === false) {
+              finish(() => reject(new Error(normalizeString(asRecord(frame.error).message) || "approval resolve failed")));
+              return;
+            }
+            finish(() => resolve());
+          }
+        } catch (error) {
+          finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+        }
+      })();
+    });
+
+    socket.addEventListener("error", () => {
+      finish(() => reject(new Error("approval gateway socket error")));
+    });
+
+    socket.addEventListener("close", (event) => {
+      if (settled) return;
+      finish(() => reject(new Error(event.reason || `approval gateway disconnected (code ${event.code})`)));
+    });
+  });
 }
 
 async function readWebSocketPayloadText(data: unknown): Promise<string> {
@@ -3179,8 +3748,8 @@ function parseMessageId(rawBody: string): string {
   return body;
 }
 
-function escapeHtml(raw: string): string {
-  return raw
+function escapeHtml(raw: unknown): string {
+  return String(raw ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -3616,6 +4185,31 @@ async function sendVoceChatReaction(params: {
 function writeJson(res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }, status: number, payload: Record<string, unknown>): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
+}
+
+function writeHtml(res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }, status: number, html: string): void {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(html);
+}
+
+async function readRequestTextWithLimit(
+  req: AsyncIterable<unknown>,
+  maxBytes: number,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
+    total += buffer.length;
+    if (total > maxBytes) {
+      throw new Error(`request body exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function readHeader(headers: Record<string, string | string[] | undefined>, key: string): string {
@@ -4408,6 +5002,11 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
 };
 
 const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
+const WRITER_FLOW_COMMAND = "writerflow";
+const WRITER_STATUS_COMMAND = "writerstatus";
+const WRITER_REVIEW_COMMAND = "writerreview";
+const WRITER_APPROVE_COMMAND = "writerapprove";
+const WRITER_TASK_COMMAND = "writertask";
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 
 type VoceChatPanelAction = "home" | "accounts" | "account-detail" | "webhook" | "routing" | "access" | "admin-remove-confirm" | "admin-remove" | "set-default-target";
@@ -4431,6 +5030,255 @@ function registerVoceChatManagementCommand(api: OpenClawPluginApi): void {
     requireAuth: true,
     handler: async (ctx) => await handleVoceChatManagementCommand(ctx, api.config as OpenClawConfig),
   });
+}
+
+function registerWriterFlowCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: WRITER_FLOW_COMMAND,
+    description: "返回 main 监督 writer 小说章节的调度说明",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => ({
+      text: renderWriterFlowGuide(),
+    }),
+  });
+}
+
+function registerWriterStatusCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: WRITER_STATUS_COMMAND,
+    description: "返回 writer 小说监督任务的状态追问模板",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => ({
+      text: renderWriterStatusGuide(),
+    }),
+  });
+}
+
+function registerWriterReviewCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: WRITER_REVIEW_COMMAND,
+    description: "返回 writer 小说章节的返工意见模板",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => ({
+      text: renderWriterReviewGuide(),
+    }),
+  });
+}
+
+function registerWriterApproveCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: WRITER_APPROVE_COMMAND,
+    description: "返回 writer 小说章节通过编审后的归档模板",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => ({
+      text: renderWriterApproveGuide(),
+    }),
+  });
+}
+
+function registerWriterTaskCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: WRITER_TASK_COMMAND,
+    description: "返回要求 main 创建 writer 小说监督任务的模板",
+    acceptsArgs: false,
+    requireAuth: true,
+    handler: async () => ({
+      text: renderWriterTaskGuide(),
+    }),
+  });
+}
+
+function renderWriterFlowGuide(): string {
+  return [
+    "Writer 小说调度说明",
+    "",
+    "监督闭环：create-task -> writer 交 transit -> main 编审 -> request-rework/approve -> main 归档正式目录",
+    "",
+    "发给 main 的总开关：",
+    "```text",
+    "从现在开始，你对 writer 的小说章节任务一律走监督工作流，不要只口头派单。",
+    "",
+    "硬性要求：",
+    "1. 先 create-task",
+    "2. writer 首稿和返工稿都只能交到 transit/writer/_workflow/...",
+    "3. 你必须先编审",
+    "4. 不通过就 request-rework，并写具体问题和修改要求",
+    "5. 通过后才 approve，并由你落正式章节目录",
+    "6. 所有进度汇报必须以 task.json 为准，不要拿“编审中”这种空话糊弄我",
+    "```",
+    "",
+    "指定某章开始执行：",
+    "```text",
+    "现在开始处理第12章，按监督工作流执行。先把 task id、当前状态、交稿路径发我，再进行编审。",
+    "```",
+    "",
+    "追状态：",
+    "```text",
+    "报第12章 workflow 状态：task id、status、latest_delivery、latest_review、formal_target。",
+    "```",
+    "",
+    "防止装懂：",
+    "```text",
+    "如果 task.json 没显示到对应状态，就不要说“已返工”“编审中”“已完成”。只按真实状态回报。",
+    "```",
+    "",
+    "要求退回返工：",
+    "```text",
+    "如果第12章有问题，不要自己脑补通过。直接写 review 文件，明确列出必改项、修改方向和不要改动项，然后让 writer 按同一 task 返工提审。",
+    "```",
+    "",
+    "要求通过归档：",
+    "```text",
+    "如果第12章通过编审，就执行 approve，把批准稿落到正式章节目录，并把最终 formal path 回报给我。",
+    "```",
+  ].join("\n");
+}
+
+function renderWriterStatusGuide(): string {
+  return [
+    "Writer 状态追问模板",
+    "",
+    "标准追法：",
+    "```text",
+    "报第12章 workflow 状态：task id、status、latest_delivery、latest_review、formal_target。",
+    "```",
+    "",
+    "如果你已经知道 task id：",
+    "```text",
+    "报 tailend-v1-ch012 的 workflow 状态：status、round、latest_delivery、latest_review、formal_target。",
+    "```",
+    "",
+    "要求它别装懂：",
+    "```text",
+    "如果 task.json 没显示到对应状态，就不要说“已返工”“编审中”“已完成”。只按真实状态回报。",
+    "```",
+    "",
+    "要求它顺带报审稿结论：",
+    "```text",
+    "除了 workflow 状态，再补一句你当前结论：待审、已退回返工、还是已通过归档。",
+    "```",
+    "",
+    "通用状态含义：",
+    "- `assigned`：已建任务，writer 还没交稿",
+    "- `awaiting_review`：writer 已交稿，等 main 编审",
+    "- `rework_requested`：main 已退回，等 writer 返工",
+    "- `merged`：main 已通过并落正式章节目录",
+  ].join("\n");
+}
+
+function renderWriterReviewGuide(): string {
+  return [
+    "Writer 返工意见模板",
+    "",
+    "要求 main 真下 review：",
+    "```text",
+    "如果这一章有问题，不要只说“再润一下”。直接按 workflow 写 review 文件，至少包含：",
+    "1. 本轮结论",
+    "2. 必改问题",
+    "3. 修改要求",
+    "4. 不要改动",
+    "5. 返工目标",
+    "然后让 writer 按同一 task 返工提审。",
+    "```",
+    "",
+    "短版发令：",
+    "```text",
+    "这章如果不通过，就 request-rework，并把问题写具体：哪里冲突、哪里抢戏、哪里逻辑不顺、要怎么改、哪些不能动。",
+    "```",
+    "",
+    "防止空话：",
+    "```text",
+    "不准用“再润一下”“节奏不太行”“感觉有点怪”这种空意见，必须给出可执行修改要求。",
+    "```",
+    "",
+    "返工意见结构范例：",
+    "```text",
+    "# 第12章返工意见",
+    "",
+    "## 本轮结论",
+    "第12章当前版本不通过，需返工后再提审。",
+    "",
+    "## 必改问题",
+    "1. ...",
+    "2. ...",
+    "",
+    "## 修改要求",
+    "1. ...",
+    "2. ...",
+    "",
+    "## 不要改动",
+    "1. ...",
+    "",
+    "## 返工目标",
+    "这章最终要落在……，不要提前吃掉后章职责。",
+    "```",
+  ].join("\n");
+}
+
+function renderWriterApproveGuide(): string {
+  return [
+    "Writer 通过归档模板",
+    "",
+    "要求 main 正式归档：",
+    "```text",
+    "如果这一章通过编审，就执行 approve，把批准稿落到正式章节目录，并把 task id、status、formal_target、source_file 回报给我。",
+    "```",
+    "",
+    "短版发令：",
+    "```text",
+    "第12章如已通过，就不要停在“审核通过”这句空话。直接 approve，落正式目录，并把最终 formal path 发我。",
+    "```",
+    "",
+    "要求它回报落盘结果：",
+    "```text",
+    "报第12章最终归档结果：task id、status、latest_delivery、formal_target。",
+    "```",
+    "",
+    "防止假通过：",
+    "```text",
+    "只有 task.json 状态变成 merged，且 formal_target 已落盘，才能说“已通过归档”。否则不要报完成。",
+    "```",
+    "",
+    "常用通过口径：",
+    "```text",
+    "返工项已修复，本章通过编审并归档正式目录。",
+    "```",
+  ].join("\n");
+}
+
+function renderWriterTaskGuide(): string {
+  return [
+    "Writer 建任务模板",
+    "",
+    "要求 main 先建 workflow task：",
+    "```text",
+    "现在先不要让 writer 直接开写。先为第12章创建 workflow task，然后把 task id、task.json 路径、formal_target、当前 status 发我。",
+    "```",
+    "",
+    "短版发令：",
+    "```text",
+    "先 create-task，再派 writer。不要跳过 task 创建这一步。",
+    "```",
+    "",
+    "要求它连正式目标一起报：",
+    "```text",
+    "给第12章建 task 后，回报：task id、task.json、deliveries_dir、reviews_dir、formal_target。",
+    "```",
+    "",
+    "如果是接管 transit 里的现成稿：",
+    "```text",
+    "把第12章现有 transit 稿纳入监督流程：先建 task，再把现稿登记成 awaiting_review，然后把 task id 和 latest_delivery 发我。",
+    "```",
+    "",
+    "防止跳步：",
+    "```text",
+    "没有 task id 之前，不要说已经开始编审，也不要让 writer 直接写正式章节目录。",
+    "```",
+  ].join("\n");
 }
 
 async function handleVoceChatManagementCommand(ctx: PluginCommandContext, cfg: OpenClawConfig): Promise<ReplyPayload> {
@@ -5315,6 +6163,11 @@ const plugin = {
     setVoceChatRuntime(api.runtime);
     api.registerChannel({ plugin: voceChatChannel });
     registerVoceChatManagementCommand(api);
+    registerWriterFlowCommand(api);
+    registerWriterStatusCommand(api);
+    registerWriterReviewCommand(api);
+    registerWriterApproveCommand(api);
+    registerWriterTaskCommand(api);
     api.registerService?.({
       id: "vocechat-approval-forwarder",
       start: async () => {

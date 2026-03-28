@@ -55,6 +55,16 @@
 
 - `/vocechatctl`
   - 打开概览面板
+- `/writerflow`
+  - 返回 `main` 监督 `writer` 处理小说章节的流程说明、发令模板与状态追问模板
+- `/writerstatus`
+  - 返回 `writer` 小说监督任务的状态追问模板与常见状态释义
+- `/writerreview`
+  - 返回要求 `main` 写具体返工意见的模板，避免空泛编审意见
+- `/writerapprove`
+  - 返回要求 `main` 在通过编审后执行 approve 并归档正式目录的模板
+- `/writertask`
+  - 返回要求 `main` 为某一章先创建监督 task 并回报 task id/路径的模板
 - `/vocechatctl accounts`
   - 查看账号列表
 - `/vocechatctl account <账号ID>`
