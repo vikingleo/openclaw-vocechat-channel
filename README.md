@@ -150,6 +150,7 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 - 调用 `openclaw plugins install` 安装插件
 - 自动补装插件 runtime 依赖，避免 `Cannot find module undici`
 - 写入或更新 `channels.vocechat` 本地配置
+- 自动补齐 `channels.vocechat.approvals`，让聊天内审批转发与网页审批链接可直接生效
 - 启用插件条目与 `vocechat-send` skill 条目
 - 将 `vocechat-send` 安装到 `~/.openclaw/skills/vocechat-send`
 - 可选自动重启 `openclaw gateway`
@@ -161,7 +162,8 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
   --base-url https://your-vocechat.example \
   --api-key YOUR_VOCECHAT_API_KEY \
   --default-to user:2 \
-  --admin-sender-ids telegram:123456789
+  --admin-sender-ids telegram:123456789 \
+  --public-webhook-base https://openclaw.example.com
 ```
 
 同时安装本机 VoceChat 服务端，并从制品 URL 升级到你自己的二进制：
@@ -221,10 +223,34 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 ./scripts/install.sh \
   --base-url http://127.0.0.1:3000 \
   --api-key YOUR_VOCECHAT_API_KEY \
-  --default-to user:2
+  --default-to user:2 \
+  --admin-sender-ids telegram:123456789,vocechat:user:1 \
+  --public-webhook-base https://openclaw.example.com
 ```
 
 4. 如需入站 webhook，再配置公网 HTTPS 和反向代理
+
+如果你希望安装完成后就直接具备“VoceChat 机器人连通 + 聊天内网页审批”这类和本机同等级的效果，至少补这几项：
+
+```bash
+./scripts/install.sh \
+  --base-url https://your-vocechat.example \
+  --api-key YOUR_VOCECHAT_API_KEY \
+  --default-to user:2 \
+  --admin-sender-ids telegram:123456789,vocechat:user:1 \
+  --public-webhook-base https://openclaw.example.com
+```
+
+说明：
+
+- `--public-webhook-base` 现在默认同时用于：
+  - 安装完成后的 webhook URL 输出
+  - `channels.vocechat.approvals.publicBaseUrl`
+- 如需把审批网页挂到另一个公网地址，可额外传：
+  - `--approval-public-base https://approval.example.com`
+  - `--approval-route-path /vocechat/approval`
+- 若明确不想启用审批转发，可传：
+  - `--disable-approvals`
 
 健康检查：
 
@@ -304,6 +330,7 @@ sh ./scripts/sync-to-root-extension.sh
 
 - 纯出站（OpenClaw -> VoceChat 发消息/附件）可以一键配完
 - 入站 webhook（VoceChat -> OpenClaw）能把 OpenClaw 本地路由和鉴权一次配好
+- 审批转发与网页审批链接，也能随安装脚本一起写入 `channels.vocechat.approvals`
 - 但公网入口和 VoceChat 端 webhook 指向，仍然属于外部部署步骤
 
 还有一个现实限制：

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 安装脚本新增审批一键配置，支持把 `channels.vocechat.approvals` 与出站/入站配置一并写好
+- `--public-webhook-base` 默认同时用于 webhook 输出和网页审批公网地址
+- 新增 `--approval-public-base`、`--approval-route-path`、`--disable-approvals` 安装参数
 - 新增 VoceChat 原生命令 `/cmd`，可直接返回 OpenClaw 自定义命令目录并支持关键字过滤
 - 停止在插件侧注册保留名 `/commands` 与 `/help`，避免与系统内建命令冲突
 - 新增 VoceChat 原生命令 `/transit_health`，管理员可直接检查或修复共享 transit 交付目录
