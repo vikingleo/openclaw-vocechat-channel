@@ -23,6 +23,14 @@
           users: ["user:2", "user:5"],
           groups: ["group:1001", "group:1002"]
         }
+      },
+      approvals: {
+        enabled: true,
+        publicBaseUrl: "https://openclaw.example.com",
+        routePath: "/vocechat/approval",
+        notifyAdminSenderIds: ["telegram:123456789", "vocechat:user:1"],
+        fanoutToAdmins: true,
+        fanoutToSession: true
       }
     }
   }

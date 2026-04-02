@@ -17,6 +17,9 @@ ADMIN_SENDER_IDS_RAW=""
 WEBHOOK_PATH="/vocechat/webhook"
 WEBHOOK_API_KEY=""
 PUBLIC_WEBHOOK_BASE=""
+APPROVALS_ENABLED="true"
+APPROVAL_PUBLIC_BASE=""
+APPROVAL_ROUTE_PATH="/vocechat/approval"
 INBOUND_ENABLED="true"
 SKIP_RESTART="false"
 AUTO_CONFIRM="false"
@@ -82,7 +85,12 @@ usage() {
   --webhook-path <路径>     入站 webhook 路径，默认 /vocechat/webhook
   --webhook-api-key <KEY>   webhook 鉴权密钥；未提供时自动生成
   --public-webhook-base <URL>
-                            公开 webhook 基础地址，用于安装完成后输出最终 webhook URL
+                            OpenClaw 公网基础地址；默认同时用于 webhook 输出和网页审批链接
+  --approval-public-base <URL>
+                            单独指定审批网页使用的 OpenClaw 公网基础地址；默认复用 --public-webhook-base
+  --approval-route-path <路径>
+                            审批网页路由，默认 /vocechat/approval
+  --disable-approvals       关闭 VoceChat 审批转发/网页审批配置
   --disable-inbound         只配置出站，不启用 webhook 入站
   --skill-scope <managed|none>
                             managed: 安装到 ~/.openclaw/skills；none: 不安装 skill
@@ -863,6 +871,18 @@ while [ $# -gt 0 ]; do
       PUBLIC_WEBHOOK_BASE=$2
       shift 2
       ;;
+    --approval-public-base)
+      APPROVAL_PUBLIC_BASE=$2
+      shift 2
+      ;;
+    --approval-route-path)
+      APPROVAL_ROUTE_PATH=$2
+      shift 2
+      ;;
+    --disable-approvals)
+      APPROVALS_ENABLED="false"
+      shift
+      ;;
     --disable-inbound)
       INBOUND_ENABLED="false"
       shift
@@ -961,6 +981,7 @@ if (path && fs.existsSync(path)) {
 }
 const vocechat = cfg.channels && typeof cfg.channels === "object" ? cfg.channels.vocechat || {} : {};
 const telegram = cfg.channels && typeof cfg.channels === "object" ? cfg.channels.telegram || {} : {};
+const approvals = vocechat && typeof vocechat === "object" ? vocechat.approvals || {} : {};
 const fields = [
   String(vocechat.enabled === false ? "false" : "true"),
   String(vocechat.baseUrl || "").trim(),
@@ -972,12 +993,15 @@ const fields = [
   String(vocechat.webhookPath || "/vocechat/webhook").trim(),
   String(vocechat.webhookApiKey || "").trim(),
   Array.isArray(telegram.allowFrom) && telegram.allowFrom.length > 0 ? `telegram:${String(telegram.allowFrom[0]).trim()}` : "",
+  String(approvals.enabled === false ? "false" : "true"),
+  String(approvals.publicBaseUrl || "").trim(),
+  String(approvals.routePath || "/vocechat/approval").trim(),
 ];
 process.stdout.write(fields.join("\t"));
 NODE
 )
 
-IFS='	' read -r EXISTING_ENABLED EXISTING_BASE_URL EXISTING_API_KEY EXISTING_DEFAULT_TO EXISTING_ALLOW_FROM EXISTING_GROUP_ALLOW_FROM EXISTING_ADMIN_IDS EXISTING_WEBHOOK_PATH EXISTING_WEBHOOK_API_KEY SUGGESTED_TELEGRAM_ADMIN <<EOF
+IFS='	' read -r EXISTING_ENABLED EXISTING_BASE_URL EXISTING_API_KEY EXISTING_DEFAULT_TO EXISTING_ALLOW_FROM EXISTING_GROUP_ALLOW_FROM EXISTING_ADMIN_IDS EXISTING_WEBHOOK_PATH EXISTING_WEBHOOK_API_KEY SUGGESTED_TELEGRAM_ADMIN EXISTING_APPROVALS_ENABLED EXISTING_APPROVAL_PUBLIC_BASE EXISTING_APPROVAL_ROUTE_PATH <<EOF
 $CURRENT_FIELDS
 EOF
 
@@ -989,6 +1013,12 @@ EOF
 [ -n "$ADMIN_SENDER_IDS_RAW" ] || ADMIN_SENDER_IDS_RAW=$EXISTING_ADMIN_IDS
 [ -n "$WEBHOOK_PATH" ] || WEBHOOK_PATH=$EXISTING_WEBHOOK_PATH
 [ -n "$WEBHOOK_API_KEY" ] || WEBHOOK_API_KEY=$EXISTING_WEBHOOK_API_KEY
+[ -n "$APPROVAL_PUBLIC_BASE" ] || APPROVAL_PUBLIC_BASE=$EXISTING_APPROVAL_PUBLIC_BASE
+[ -n "$APPROVAL_ROUTE_PATH" ] || APPROVAL_ROUTE_PATH=$EXISTING_APPROVAL_ROUTE_PATH
+
+if [ -z "$APPROVAL_PUBLIC_BASE" ] && [ -n "$PUBLIC_WEBHOOK_BASE" ]; then
+  APPROVAL_PUBLIC_BASE=$PUBLIC_WEBHOOK_BASE
+fi
 
 if [ "$INSTALL_SERVER" = "true" ] && [ -z "$BASE_URL" ]; then
   BASE_URL="http://$SERVER_HOST:$SERVER_PORT"
@@ -1006,6 +1036,14 @@ if [ "$AUTO_CONFIRM" != "true" ]; then
     API_KEY=$(prompt_secret "输入 VoceChat Bot API Key")
   fi
   [ -n "$DEFAULT_TO" ] || DEFAULT_TO=$(prompt "输入默认目标（可留空，如 user:2）" "$EXISTING_DEFAULT_TO")
+  PUBLIC_WEBHOOK_BASE=$(prompt "输入 OpenClaw 公网基础地址（用于 webhook 输出与网页审批，可留空）" "$PUBLIC_WEBHOOK_BASE")
+  if [ -z "$APPROVAL_PUBLIC_BASE" ] && [ -n "$PUBLIC_WEBHOOK_BASE" ]; then
+    APPROVAL_PUBLIC_BASE=$PUBLIC_WEBHOOK_BASE
+  fi
+  if [ "$APPROVALS_ENABLED" = "true" ]; then
+    APPROVAL_PUBLIC_BASE=$(prompt "输入审批网页公网基础地址（默认复用上面的 OpenClaw 公网地址，可留空）" "$APPROVAL_PUBLIC_BASE")
+    APPROVAL_ROUTE_PATH=$(prompt "输入审批网页路由" "$APPROVAL_ROUTE_PATH")
+  fi
   if [ -z "$ADMIN_SENDER_IDS_RAW" ] && [ -n "$SUGGESTED_TELEGRAM_ADMIN" ]; then
     ADMIN_SENDER_IDS_RAW=$(prompt "输入管理员发送者ID（逗号分隔，可留空）" "$SUGGESTED_TELEGRAM_ADMIN")
   else
@@ -1062,6 +1100,11 @@ log "安装模式: $( [ "$LINK_MODE" = "true" ] && printf 'link' || printf 'copy
 log "VoceChat baseUrl: $BASE_URL"
 log "默认目标: ${DEFAULT_TO:-<未设置>}"
 log "入站模式: $( [ "$INBOUND_ENABLED" = "true" ] && printf 'webhook+outbound' || printf 'outbound-only' )"
+log "审批模式: $( [ "$APPROVALS_ENABLED" = "true" ] && printf 'enabled' || printf 'disabled' )"
+if [ "$APPROVALS_ENABLED" = "true" ]; then
+  log "审批公网地址: ${APPROVAL_PUBLIC_BASE:-<未设置>}"
+  log "审批路由: ${APPROVAL_ROUTE_PATH:-/vocechat/approval}"
+fi
 log "Skill 安装: $SKILL_SCOPE"
 if [ "$INSTALL_SERVER" = "true" ]; then
   log "VoceChat 服务端: 安装/升级"
@@ -1114,6 +1157,9 @@ GROUP_ALLOW_FROM_RAW="$GROUP_ALLOW_FROM_RAW" \
 ADMIN_SENDER_IDS_RAW="$ADMIN_SENDER_IDS_RAW" \
 WEBHOOK_PATH="$WEBHOOK_PATH" \
 WEBHOOK_API_KEY="$WEBHOOK_API_KEY" \
+APPROVALS_ENABLED="$APPROVALS_ENABLED" \
+APPROVAL_PUBLIC_BASE="$APPROVAL_PUBLIC_BASE" \
+APPROVAL_ROUTE_PATH="$APPROVAL_ROUTE_PATH" \
 INBOUND_ENABLED="$INBOUND_ENABLED" \
 CHANNEL_ENABLED="$CHANNEL_ENABLED" \
 node --input-type=commonjs - <<'NODE'
@@ -1173,6 +1219,23 @@ const adminSenderIds = parseList(process.env.ADMIN_SENDER_IDS_RAW).map((item) =>
 if (adminSenderIds.length > 0) {
   management.adminSenderIds = adminSenderIds;
 }
+const approvals = ensureRecord(vocechat, "approvals");
+approvals.enabled = String(process.env.APPROVALS_ENABLED || "true") === "true";
+const approvalPublicBase = String(process.env.APPROVAL_PUBLIC_BASE || "").trim().replace(/\/+$/g, "");
+if (approvalPublicBase) {
+  approvals.publicBaseUrl = approvalPublicBase;
+} else {
+  delete approvals.publicBaseUrl;
+}
+const approvalRoutePath = String(process.env.APPROVAL_ROUTE_PATH || "/vocechat/approval").trim();
+if (approvalRoutePath) {
+  approvals.routePath = approvalRoutePath.startsWith("/") ? approvalRoutePath : `/${approvalRoutePath}`;
+}
+if (adminSenderIds.length > 0) {
+  approvals.notifyAdminSenderIds = adminSenderIds;
+}
+approvals.fanoutToAdmins = approvals.fanoutToAdmins ?? true;
+approvals.fanoutToSession = approvals.fanoutToSession ?? true;
 
 const plugins = ensureRecord(root, "plugins");
 const entries = ensureRecord(plugins, "entries");
@@ -1223,6 +1286,19 @@ if [ -n "$PUBLIC_WEBHOOK_BASE" ] && [ "$INBOUND_ENABLED" = "true" ]; then
   esac
 fi
 
+APPROVAL_URL=""
+if [ "$APPROVALS_ENABLED" = "true" ] && [ -n "$APPROVAL_PUBLIC_BASE" ]; then
+  APPROVAL_PUBLIC_BASE=$(expand_home "$APPROVAL_PUBLIC_BASE")
+  case "$APPROVAL_PUBLIC_BASE" in
+    */)
+      APPROVAL_URL="${APPROVAL_PUBLIC_BASE%/}${APPROVAL_ROUTE_PATH}"
+      ;;
+    *)
+      APPROVAL_URL="${APPROVAL_PUBLIC_BASE}${APPROVAL_ROUTE_PATH}"
+      ;;
+  esac
+fi
+
 log ""
 log "安装完成"
 if [ "$INSTALL_SERVER" = "true" ]; then
@@ -1256,4 +1332,14 @@ if [ "$INBOUND_ENABLED" = "true" ]; then
   fi
 else
   log "  入站模式: 已关闭（仅出站）"
+fi
+if [ "$APPROVALS_ENABLED" = "true" ]; then
+  log "  审批转发: 已启用"
+  if [ -n "$APPROVAL_URL" ]; then
+    log "  审批网页入口: $APPROVAL_URL"
+  else
+    log "  审批网页入口: 待补 OpenClaw 公网基础地址（可通过 --public-webhook-base 或 --approval-public-base 配置）"
+  fi
+else
+  log "  审批转发: 已关闭"
 fi
