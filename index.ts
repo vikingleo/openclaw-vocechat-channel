@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
@@ -5002,6 +5003,8 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
 };
 
 const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
+const COMMAND_CATALOG_COMMAND = "cmd";
+const TRANSIT_HEALTH_COMMAND = "transit_health";
 const WRITER_FLOW_COMMAND = "writerflow";
 const WRITER_STATUS_COMMAND = "writerstatus";
 const WRITER_REVIEW_COMMAND = "writerreview";
@@ -5029,6 +5032,26 @@ function registerVoceChatManagementCommand(api: OpenClawPluginApi): void {
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx) => await handleVoceChatManagementCommand(ctx, api.config as OpenClawConfig),
+  });
+}
+
+function registerCommandCatalogCommands(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: COMMAND_CATALOG_COMMAND,
+    description: "返回 OpenClaw 自定义命令目录，支持关键字过滤",
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx) => await handleCommandCatalogCommand(ctx),
+  });
+}
+
+function registerTransitHealthCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: TRANSIT_HEALTH_COMMAND,
+    description: "检查或修复共享 transit 交付目录的可写性（管理员）",
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx) => await handleTransitHealthCommand(ctx, api.config as OpenClawConfig),
   });
 }
 
@@ -5089,6 +5112,116 @@ function registerWriterTaskCommand(api: OpenClawPluginApi): void {
     handler: async () => ({
       text: renderWriterTaskGuide(),
     }),
+  });
+}
+
+async function handleCommandCatalogCommand(ctx: PluginCommandContext): Promise<ReplyPayload> {
+  try {
+    return {
+      text: await renderCustomCommandCatalog(ctx.args ?? ""),
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      text: [
+        "自定义命令目录",
+        "",
+        "读取失败。",
+        detail,
+        "",
+        `脚本：${resolveCustomCommandCatalogScriptPath()}`,
+        `文档：${resolveCustomCommandCatalogMarkdownPath()}`,
+      ].join("\n"),
+      isError: true,
+    };
+  }
+}
+
+async function handleTransitHealthCommand(ctx: PluginCommandContext, cfg: OpenClawConfig): Promise<ReplyPayload> {
+  const management = resolveVoceChatManagement(cfg);
+  if (!isVoceChatAdminAuthorized(ctx, management)) {
+    return {
+      text: [
+        "Transit 健康检查",
+        "",
+        "无权限：仅管理员可执行该命令。",
+      ].join("\n"),
+      isError: true,
+    };
+  }
+
+  const { mode, target } = parseTransitHealthArgs(ctx.args ?? "");
+  const scriptPath = path.join(resolveOpenClawStateDir(), "workspace", "memory", "ops", "transit_health.sh");
+  try {
+    await fs.access(scriptPath);
+    const args = [scriptPath, mode];
+    if (target) args.push(target);
+    const rendered = await execFileText("sh", args);
+    return {
+      text: rendered.trim(),
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      text: [
+        "Transit 健康检查",
+        "",
+        "执行失败。",
+        detail,
+        "",
+        `脚本：${scriptPath}`,
+      ].join("\n"),
+      isError: true,
+    };
+  }
+}
+
+function parseTransitHealthArgs(rawArgs: string): { mode: "check" | "repair"; target: string } {
+  const tokens = rawArgs.trim().split(/\s+/).filter(Boolean);
+  const first = (tokens[0] ?? "").toLowerCase();
+  if (first === "repair") {
+    return { mode: "repair", target: tokens.slice(1).join(" ") };
+  }
+  if (first === "check" || first === "") {
+    return { mode: "check", target: tokens.slice(first ? 1 : 0).join(" ") };
+  }
+  return { mode: "check", target: tokens.join(" ") };
+}
+
+async function renderCustomCommandCatalog(rawArgs: string): Promise<string> {
+  const queryTokens = rawArgs.trim().split(/\s+/).filter(Boolean);
+  const scriptPath = resolveCustomCommandCatalogScriptPath();
+  try {
+    await fs.access(scriptPath);
+    const rendered = await execFileText("python3", [scriptPath, ...queryTokens]);
+    if (rendered.trim()) return rendered.trim();
+  } catch (error) {
+    if (queryTokens.length > 0) throw error;
+  }
+
+  const markdownPath = resolveCustomCommandCatalogMarkdownPath();
+  const markdown = await fs.readFile(markdownPath, "utf8");
+  return markdown.trim();
+}
+
+function resolveCustomCommandCatalogScriptPath(): string {
+  return path.join(resolveOpenClawStateDir(), "workspace", "memory", "ops", "custom_commands_catalog.py");
+}
+
+function resolveCustomCommandCatalogMarkdownPath(): string {
+  return path.join(resolveOpenClawStateDir(), "workspace", "COMMANDS.md");
+}
+
+async function execFileText(command: string, args: string[]): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    execFileCallback(command, args, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const detail = stderr.trim() || stdout.trim() || error.message;
+        reject(new Error(detail));
+        return;
+      }
+      resolve(stdout);
+    });
   });
 }
 
@@ -6163,6 +6296,8 @@ const plugin = {
     setVoceChatRuntime(api.runtime);
     api.registerChannel({ plugin: voceChatChannel });
     registerVoceChatManagementCommand(api);
+    registerCommandCatalogCommands(api);
+    registerTransitHealthCommand(api);
     registerWriterFlowCommand(api);
     registerWriterStatusCommand(api);
     registerWriterReviewCommand(api);

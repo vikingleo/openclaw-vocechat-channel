@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 新增 VoceChat 原生命令 `/cmd`，可直接返回 OpenClaw 自定义命令目录并支持关键字过滤
+- 停止在插件侧注册保留名 `/commands` 与 `/help`，避免与系统内建命令冲突
+- 新增 VoceChat 原生命令 `/transit_health`，管理员可直接检查或修复共享 transit 交付目录
 - 新增 `/writerflow` 聊天命令，返回 `main` 监督 `writer` 处理小说章节的流程说明、发令模板与状态追问模板
 - 新增 `/writerstatus` 聊天命令，返回 `writer` 小说监督任务的状态追问模板与常见状态释义
 - 新增 `/writerreview` 聊天命令，返回要求 `main` 写具体返工意见的模板，避免空泛编审意见

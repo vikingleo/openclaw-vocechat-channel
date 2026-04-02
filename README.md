@@ -53,6 +53,10 @@
 
 ## 管理命令
 
+- `/cmd [keyword]`
+  - 返回 OpenClaw 自定义命令目录；支持按关键字或别名过滤
+- `/transit_health [check|repair] [target]`
+  - 管理员执行共享 `transit` 交付目录的检查或修复
 - `/vocechatctl`
   - 打开概览面板
 - `/writerflow`
@@ -81,6 +85,8 @@
   - 修改默认账号的默认目标
 - `/vocechatctl set default-to <账号ID> <目标>`
   - 修改指定账号的默认目标
+
+`/cmd` 会优先由 VoceChat 插件原生命令处理，直接读取 OpenClaw 工作区中的命令目录脚本；不需要依赖 `main` 先接住后再转述。`/transit_health` 也由插件原生命令处理，直接执行宿主机 `transit_health.sh`。`/commands` 与 `/help` 保持交给系统内建命令，避免保留名冲突。
 
 在 Telegram 中，面板命令第一次会新发一张管理卡片；之后的按钮操作会原地刷新。编辑类命令会直接写回宿主配置，并按通道配置自动热重载。路由、权限、账号详情卡片还提供主色复制命令按钮，可一键复制专用命令模板；权限卡片会直接展示当前管理员列表，并给每个管理员提供删除按钮；路由卡片和账号详情页会优先使用 `management.quickTargets` 作为真实常用目标预设，未配置时再自动从现有设置推断。
 
