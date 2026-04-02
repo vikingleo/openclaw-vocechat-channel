@@ -155,6 +155,21 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
   --public-webhook-base https://openclaw.example.com
 ```
 
+如果 `VoceChat` 和 `OpenClaw` 就跑在同一台宿主机，或 `VoceChat` 跑在 Docker 容器里而 `OpenClaw` 跑在宿主机：
+
+- `channels.vocechat.baseUrl` 优先写内部地址，例如：
+  - `http://127.0.0.1:53000`
+- `VoceChat Bot webhook` 也优先写内部回调地址，例如：
+  - `http://172.17.0.1:18789/vocechat/webhook`
+  - 或 `http://127.0.0.1:18789/vocechat/webhook`
+- 不建议把 Bot webhook 配成 `https://server.example.com/vocechat/webhook` 这种公网域名回环地址
+
+原因：
+
+- 机器内部回调不需要经过公网 DNS、NAT 回环或 1Panel/OpenResty
+- 故障点更少，也更容易排查
+- 真正需要保留公网的，通常只有“给人点击”的网页入口，例如审批页 `approvals.publicBaseUrl`
+
 如果你还想在同一轮里把本机 `vocechat-server` 也装好：
 
 ```bash
@@ -309,6 +324,7 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 - `--public-webhook-base` 现在默认同时用于：
   - 安装完成后的 webhook URL 输出
   - `channels.vocechat.approvals.publicBaseUrl`
+- 如果你的 `VoceChat` webhook 实际走的是容器到宿主机内部地址，例如 `http://172.17.0.1:18789/vocechat/webhook`，这完全正常；`--public-webhook-base` 仍然只需要用于“对外展示的 URL”和审批网页公网入口
 - 如需把审批网页挂到另一个公网地址，可额外传：
   - `--approval-public-base https://approval.example.com`
   - `--approval-route-path /vocechat/approval`
