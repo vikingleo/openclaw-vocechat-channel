@@ -130,6 +130,69 @@
 
 ## 一键安装与卸载
 
+### 从 Clone 到安装完成
+
+如果你是从一台空白机器开始，建议先走一遍最小闭环：
+
+#### 1. 克隆仓库
+
+```bash
+git clone https://github.com/vikingleo/openclaw-vocechat-channel.git
+cd openclaw-vocechat-channel
+chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
+```
+
+#### 2. 执行安装脚本
+
+只安装插件，并直接把机器人连通与审批页面入口一起配好：
+
+```bash
+./scripts/install.sh \
+  --base-url https://your-vocechat.example \
+  --api-key YOUR_VOCECHAT_API_KEY \
+  --default-to user:2 \
+  --admin-sender-ids telegram:123456789,vocechat:user:1 \
+  --public-webhook-base https://openclaw.example.com
+```
+
+如果你还想在同一轮里把本机 `vocechat-server` 也装好：
+
+```bash
+./scripts/install.sh \
+  --install-server \
+  --server-bin /path/to/vocechat-server.bin \
+  --base-url http://127.0.0.1:3000
+```
+
+#### 3. 检查安装结果
+
+先跑体检脚本：
+
+```bash
+./scripts/doctor.sh
+```
+
+再看最近网关日志：
+
+```bash
+journalctl --user -u openclaw-gateway.service -n 120 --no-pager | rg 'vocechat|approval'
+```
+
+如果你已经把 webhook 指向 OpenClaw，还可以在 VoceChat 里直接发送：
+
+```text
+/vocechatctl webhook
+```
+
+你应该至少能确认这几件事：
+
+- `channels.vocechat` 已写入宿主配置
+- `channels.vocechat.approvals` 已按参数生成
+- 日志里出现 `approval route registered` 或 `approval forwarder enabled`
+- `doctor.sh` 不再提示插件未安装或配置缺失
+
+走完这一步，就算完整完成了“clone -> 安装 -> 验证”。
+
 当前仓库现在提供专业化安装/卸载脚本：
 
 ```bash

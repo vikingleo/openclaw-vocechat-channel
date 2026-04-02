@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- README 补充“从 clone 到安装完成”的最小闭环，覆盖 clone、install、doctor 与日志验证
 - 安装脚本新增审批一键配置，支持把 `channels.vocechat.approvals` 与出站/入站配置一并写好
 - `--public-webhook-base` 默认同时用于 webhook 输出和网页审批公网地址
 - 新增 `--approval-public-base`、`--approval-route-path`、`--disable-approvals` 安装参数
