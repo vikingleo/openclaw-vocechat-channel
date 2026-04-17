@@ -93,6 +93,8 @@ type ResolvedVoceChatGroupConfig = {
   requireMention?: boolean;
 };
 
+type VoceChatBubbleStyle = "plain" | "callout" | "badge" | "compact";
+
 type VoceChatAccountConfig = {
   enabled?: boolean;
   name?: string;
@@ -103,6 +105,10 @@ type VoceChatAccountConfig = {
   ackReaction?: string;
   defaultTo?: string;
   timeoutMs?: number;
+  bubbleStyle?: VoceChatBubbleStyle;
+  bubbleStyleMap?: Record<string, unknown>;
+  bubbleStyleByTarget?: Record<string, unknown>;
+  bubbleStyleBySender?: Record<string, unknown>;
   inboundEnabled?: boolean;
   inboundAckEnabled?: boolean;
   inboundAckText?: string;
@@ -173,6 +179,8 @@ type ResolvedAccount = {
   groupPathTemplate: string;
   defaultTo?: string;
   timeoutMs: number;
+  bubbleStyle: VoceChatBubbleStyle;
+  bubbleStyleMap: Record<string, VoceChatBubbleStyle>;
   inboundEnabled: boolean;
   inboundAckEnabled: boolean;
   inboundAckText: string;
@@ -1574,6 +1582,13 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
 
   const baseEnabled = section.enabled !== false;
   const accountEnabled = merged.enabled !== false;
+  const bubbleStyle = parseVoceChatBubbleStyle(merged.bubbleStyle, "plain");
+  const bubbleStyleMap = parseVoceChatBubbleStyleMap([
+    asRecord(baseConfig.bubbleStyleMap),
+    asRecord(baseConfig.bubbleStyleByTarget),
+    asRecord(account.bubbleStyleMap),
+    asRecord(account.bubbleStyleByTarget),
+  ]);
 
   return {
     accountId: resolvedAccountId,
@@ -1585,6 +1600,8 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
     groupPathTemplate: normalizeString(merged.groupPathTemplate) || DEFAULT_GROUP_PATH_TEMPLATE,
     defaultTo: normalizeString(merged.defaultTo) || undefined,
     timeoutMs: parseTimeoutMs(merged.timeoutMs),
+    bubbleStyle,
+    bubbleStyleMap,
     inboundEnabled: merged.inboundEnabled !== false,
     inboundAckEnabled: merged.inboundAckEnabled === true,
     inboundAckText: normalizeString(merged.inboundAckText) || DEFAULT_INBOUND_ACK_TEXT,
@@ -1638,6 +1655,26 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
     allowFrom: parseAllowEntries(merged.allowFrom),
     groupAllowFrom: parseAllowEntries(merged.groupAllowFrom),
   };
+}
+
+function parseVoceChatBubbleStyle(value: unknown, fallback: VoceChatBubbleStyle = "plain"): VoceChatBubbleStyle {
+  const normalized = normalizeString(value).toLowerCase();
+  if (normalized === "callout" || normalized === "badge" || normalized === "compact" || normalized === "plain") {
+    return normalized;
+  }
+  return fallback;
+}
+
+function parseVoceChatBubbleStyleMap(entries: Record<string, unknown>[]): Record<string, VoceChatBubbleStyle> {
+  const result: Record<string, VoceChatBubbleStyle> = {};
+  for (const entry of entries) {
+    for (const [key, value] of Object.entries(entry)) {
+      const normalizedKey = normalizeString(key);
+      if (!normalizedKey) continue;
+      result[normalizedKey] = parseVoceChatBubbleStyle(value, "plain");
+    }
+  }
+  return result;
 }
 
 function parseVoceChatGroups(value: unknown): Record<string, ResolvedVoceChatGroupConfig> {
@@ -5005,6 +5042,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
 const VOCECHAT_CONTROL_COMMAND = "vocechatctl";
 const COMMAND_CATALOG_COMMAND = "cmd";
 const TRANSIT_HEALTH_COMMAND = "transit_health";
+const MODEL_STATUS_COMMAND = "modelstatus";
 const WRITER_FLOW_COMMAND = "writerflow";
 const WRITER_STATUS_COMMAND = "writerstatus";
 const WRITER_REVIEW_COMMAND = "writerreview";
@@ -5052,6 +5090,16 @@ function registerTransitHealthCommand(api: OpenClawPluginApi): void {
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx) => await handleTransitHealthCommand(ctx, api.config as OpenClawConfig),
+  });
+}
+
+function registerModelStatusCommand(api: OpenClawPluginApi): void {
+  api.registerCommand({
+    name: MODEL_STATUS_COMMAND,
+    description: "查询所有 provider 的余额与模型连通状态（管理员）",
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx) => await handleModelStatusCommand(ctx, api.config as OpenClawConfig),
   });
 }
 
@@ -5186,6 +5234,218 @@ function parseTransitHealthArgs(rawArgs: string): { mode: "check" | "repair"; ta
     return { mode: "check", target: tokens.slice(first ? 1 : 0).join(" ") };
   }
   return { mode: "check", target: tokens.join(" ") };
+}
+
+async function handleModelStatusCommand(ctx: PluginCommandContext, cfg: OpenClawConfig): Promise<ReplyPayload> {
+  const management = resolveVoceChatManagement(cfg);
+  if (!isVoceChatAdminAuthorized(ctx, management)) {
+    return {
+      text: [
+        "模型余额与连通状态",
+        "",
+        "无权限：仅管理员可执行该命令。",
+      ].join("\n"),
+      isError: true,
+    };
+  }
+
+  try {
+    return {
+      text: await renderModelStatusReport(cfg, ctx.args ?? ""),
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      text: [
+        "模型余额与连通状态",
+        "",
+        "执行失败。",
+        detail,
+      ].join("\n"),
+      isError: true,
+    };
+  }
+}
+
+async function renderModelStatusReport(cfg: OpenClawConfig, rawArgs: string): Promise<string> {
+  const providers = asRecord(asRecord(asRecord(cfg).models).providers);
+  const filter = new Set(rawArgs.trim().split(/\s+/).map((item) => item.trim().toLowerCase()).filter(Boolean));
+  const entries = Object.entries(providers)
+    .filter(([providerId, value]) => {
+      if (filter.size > 0 && !filter.has(providerId.toLowerCase())) return false;
+      const record = asRecord(value);
+      return normalizeResolvedConfigValue(record.apiKey) && normalizeResolvedConfigValue(record.baseUrl);
+    })
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  if (entries.length === 0) {
+    return [
+      "模型余额与连通状态",
+      "",
+      filter.size > 0 ? `未找到匹配 provider：${[...filter].join("、")}` : "未找到带 baseUrl/apiKey 的 provider 配置。",
+    ].join("\n");
+  }
+
+  const reports = await Promise.all(entries.map(([providerId, value]) => inspectModelProvider(providerId, asRecord(value))));
+  const okCount = reports.filter((item) => item.connectivityOk).length;
+
+  return [
+    "模型余额与连通状态",
+    "",
+    `Provider 总数：${reports.length}` ,
+    `连通正常：${okCount}` ,
+    `连通异常：${reports.length - okCount}` ,
+    "",
+    reports.map(renderModelProviderReport).join("\n\n"),
+  ].join("\n");
+}
+
+async function inspectModelProvider(providerId: string, provider: Record<string, unknown>): Promise<{
+  providerId: string;
+  connectivityOk: boolean;
+  connectivityText: string;
+  balanceText: string;
+  modelLines: string[];
+}> {
+  const baseUrl = normalizeResolvedConfigValue(provider.baseUrl);
+  const apiKey = normalizeResolvedConfigValue(provider.apiKey);
+  const configuredModelIds = parseConfiguredProviderModelIds(provider);
+  const usageResult = await fetchProviderBalance(baseUrl, apiKey);
+  const modelsResult = await fetchProviderModels(baseUrl, apiKey);
+
+  const modelLines = configuredModelIds.length === 0
+    ? ["未配置模型"]
+    : configuredModelIds.map((modelId) => {
+        if (!modelsResult.ok || modelsResult.modelIds.size === 0) return `${modelId}：未知`;
+        return `${modelId}：${modelsResult.modelIds.has(modelId) ? "在线" : "未列出"}`;
+      });
+
+  return {
+    providerId,
+    connectivityOk: modelsResult.ok,
+    connectivityText: modelsResult.ok ? `正常（${modelsResult.detail}）` : `异常（${modelsResult.detail}）`,
+    balanceText: usageResult.text,
+    modelLines,
+  };
+}
+
+function renderModelProviderReport(report: {
+  providerId: string;
+  connectivityOk: boolean;
+  connectivityText: string;
+  balanceText: string;
+  modelLines: string[];
+}): string {
+  return [
+    `【${report.providerId}】`,
+    `连通：${report.connectivityText}`,
+    `余额：${report.balanceText}`,
+    `模型：${report.modelLines.join("；")}`,
+  ].join("\n");
+}
+
+function parseConfiguredProviderModelIds(provider: Record<string, unknown>): string[] {
+  const models = provider.models;
+  if (!Array.isArray(models)) return [];
+  const ids = models
+    .map((item) => normalizeResolvedConfigValue(asRecord(item).id))
+    .filter(Boolean);
+  return Array.from(new Set(ids));
+}
+
+function normalizeResolvedConfigValue(value: unknown): string {
+  const raw = normalizeString(value);
+  if (!raw) return "";
+  return raw.replace(/\$\{([A-Z0-9_]+)\}/gi, (_, name: string) => normalizeString(process.env[name]) || '${' + name + '}').trim();
+}
+
+function buildProviderApiUrl(baseUrl: string, pathname: string): string {
+  return `${baseUrl.replace(/\/+$/g, "")}/${pathname.replace(/^\/+/, "")}`;
+}
+
+async function fetchProviderBalance(baseUrl: string, apiKey: string): Promise<{ text: string }> {
+  const usageResponse = await fetchProviderJson(baseUrl, apiKey, "v1/usage");
+  const usageParsed = extractProviderBalanceSummary(usageResponse.body);
+  if (usageParsed) return { text: usageParsed };
+
+  const summaryResponse = await fetchProviderJson(baseUrl, apiKey, "account/summary", { "User-Agent": "cc-switch/1.0" });
+  const summaryParsed = extractProviderBalanceSummary(summaryResponse.body);
+  if (summaryParsed) return { text: summaryParsed };
+
+  const detail = usageResponse.error || summaryResponse.error || "未返回余额字段";
+  return { text: `未知（${detail}）` };
+}
+
+function extractProviderBalanceSummary(body: unknown): string | null {
+  const response = asRecord(body);
+  if (Object.keys(response).length === 0) return null;
+
+  const remaining = response.remaining ?? asRecord(response.quota).remaining ?? response.balance;
+  const unit = normalizeString(response.unit) || normalizeString(asRecord(response.quota).unit) || "USD";
+  const isValidValue = response.is_active ?? response.isValid;
+  const statusText = typeof isValidValue === "boolean" ? (isValidValue ? "有效" : "失效") : "状态未知";
+
+  if (response.subscription && typeof response.subscription === "object") {
+    const subscription = asRecord(response.subscription);
+    const balanceText = remaining == null ? "未知" : `${String(remaining)} ${unit}`;
+    const subRemaining = subscription.remaining_quota ?? subscription.remaining;
+    const subTotal = subscription.total_quota ?? subscription.total;
+    const count = subscription.active_subscription_count ?? asRecord(response).subscriptions?.length;
+    const subText = subRemaining == null && subTotal == null
+      ? "订阅：未返回额度"
+      : `订阅：${String(subRemaining ?? "?")}/${String(subTotal ?? "?")} ${unit}`;
+    const countText = count == null ? "" : `，订阅数：${String(count)}`;
+    return `${balanceText}，${statusText}，${subText}${countText}`;
+  }
+
+  if (remaining == null) return null;
+  return `${String(remaining)} ${unit}，${statusText}`;
+}
+
+async function fetchProviderModels(baseUrl: string, apiKey: string): Promise<{ ok: boolean; detail: string; modelIds: Set<string> }> {
+  const result = await fetchProviderJson(baseUrl, apiKey, "v1/models");
+  if (result.error) return { ok: false, detail: result.error, modelIds: new Set() };
+  const body = asRecord(result.body);
+  const items = Array.isArray(body.data) ? body.data : [];
+  const modelIds = new Set(items.map((item) => normalizeResolvedConfigValue(asRecord(item).id)).filter(Boolean));
+  return { ok: true, detail: `v1/models 返回 ${modelIds.size} 个模型`, modelIds };
+}
+
+async function fetchProviderJson(
+  baseUrl: string,
+  apiKey: string,
+  pathname: string,
+  extraHeaders?: Record<string, string>,
+): Promise<{ body: unknown; error?: string }> {
+  const url = buildProviderApiUrl(baseUrl, pathname);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        ...(extraHeaders ?? {}),
+      },
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    });
+
+    const text = await response.text();
+    let body: unknown = {};
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { raw: text };
+    }
+
+    if (!response.ok) {
+      const message = normalizeString(asRecord(asRecord(body).error).message) || normalizeString(asRecord(body).message) || `HTTP ${response.status}`;
+      return { body, error: message };
+    }
+
+    return { body };
+  } catch (error) {
+    return { body: {}, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function renderCustomCommandCatalog(rawArgs: string): Promise<string> {
@@ -6298,6 +6558,7 @@ const plugin = {
     registerVoceChatManagementCommand(api);
     registerCommandCatalogCommands(api);
     registerTransitHealthCommand(api);
+    registerModelStatusCommand(api);
     registerWriterFlowCommand(api);
     registerWriterStatusCommand(api);
     registerWriterReviewCommand(api);
