@@ -25,6 +25,9 @@
       "apiKey": {
         "type": "string"
       },
+      "directConnect": {
+        "type": "boolean"
+      },
       "privatePathTemplate": {
         "type": "string"
       },
@@ -151,6 +154,9 @@
             },
             "apiKey": {
               "type": "string"
+            },
+            "directConnect": {
+              "type": "boolean"
             },
             "privatePathTemplate": {
               "type": "string"

@@ -19,3 +19,39 @@ declare module "openclaw/plugin-sdk" {
   export type PluginRuntime = any;
   export type ReplyPayload = any;
 }
+
+declare module "openclaw/plugin-sdk/reply-payload" {
+  export const createNormalizedOutboundDeliverer: any;
+  export const formatTextWithAttachmentLinks: any;
+  export const resolveOutboundMediaUrls: any;
+}
+
+declare module "openclaw/plugin-sdk/channel-reply-pipeline" {
+  export const createReplyPrefixOptions: any;
+}
+
+declare module "openclaw/plugin-sdk/outbound-media" {
+  export const loadOutboundMediaFromUrl: any;
+}
+
+declare module "openclaw/plugin-sdk/json-store" {
+  export const writeJsonFileAtomically: any;
+}
+
+declare module "openclaw/plugin-sdk/webhook-ingress" {
+  export const registerPluginHttpRoute: any;
+  export const WEBHOOK_BODY_READ_DEFAULTS: {
+    preAuth: {
+      maxBytes: number;
+      timeoutMs: number;
+    };
+    postAuth: {
+      maxBytes: number;
+      timeoutMs: number;
+    };
+  };
+}
+
+declare module "openclaw/plugin-sdk/webhook-request-guards" {
+  export const readJsonBodyWithLimit: any;
+}

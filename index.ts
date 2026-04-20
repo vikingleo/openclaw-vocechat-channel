@@ -7,19 +7,18 @@ import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { createWorker, OEM, PSM } from "tesseract.js";
+import { Agent, type Dispatcher } from "undici";
 
 import {
   createNormalizedOutboundDeliverer,
-  createReplyPrefixOptions,
-  DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
-  DEFAULT_WEBHOOK_MAX_BODY_BYTES,
   formatTextWithAttachmentLinks,
-  loadOutboundMediaFromUrl,
-  readJsonBodyWithLimit,
-  registerPluginHttpRoute,
   resolveOutboundMediaUrls,
-  writeJsonFileAtomically,
-} from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/reply-payload";
+import { createReplyPrefixOptions } from "openclaw/plugin-sdk/channel-reply-pipeline";
+import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
+import { writeJsonFileAtomically } from "openclaw/plugin-sdk/json-store";
+import { registerPluginHttpRoute, WEBHOOK_BODY_READ_DEFAULTS } from "openclaw/plugin-sdk/webhook-ingress";
+import { readJsonBodyWithLimit } from "openclaw/plugin-sdk/webhook-request-guards";
 import type {
   ChannelOutboundContext,
   ChannelPlugin,
@@ -40,7 +39,11 @@ const DEFAULT_PRIVATE_PATH_TEMPLATE = "/api/bot/send_to_user/{id}";
 const DEFAULT_GROUP_PATH_TEMPLATE = "/api/bot/send_to_group/{id}";
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_WEBHOOK_PATH = "/vocechat/webhook";
+const DEFAULT_WEBHOOK_MAX_BODY_BYTES = WEBHOOK_BODY_READ_DEFAULTS.preAuth.maxBytes;
+const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs;
 const DEFAULT_INBOUND_ACK_TEXT = "已收到，正在处理中...";
+const DEFAULT_DISPATCH_FAILURE_TEXT = "本次处理失败，暂时没有生成可发送的回复。请稍后重试。";
+const DEFAULT_EMPTY_REPLY_TEXT = "本次处理完成，但没有生成可发送的回复。请稍后重试。";
 const DEFAULT_INBOUND_BLOCKED_TYPES = ["system", "event", "notice", "typing", "status", "reaction", "like"];
 const DEFAULT_INBOUND_MERGE_WINDOW_MS = 1200;
 const DEFAULT_INBOUND_MERGE_MAX_MESSAGES = 3;
@@ -56,6 +59,7 @@ const DEFAULT_INBOUND_OCR_MAX_TEXT_LENGTH = 3000;
 const RECENT_MESSAGE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_INBOUND_MEDIA_MAX_BYTES = 20 * 1024 * 1024;
 const MAX_INBOUND_IMAGE_ATTACHMENTS = 8;
+const DIRECT_FETCH_DISPATCHER: Dispatcher = new Agent();
 const INBOUND_IMAGE_EXTENSIONS = new Set([
   ".jpg",
   ".jpeg",
@@ -100,6 +104,7 @@ type VoceChatAccountConfig = {
   name?: string;
   baseUrl?: string;
   apiKey?: string;
+  directConnect?: boolean;
   privatePathTemplate?: string;
   groupPathTemplate?: string;
   ackReaction?: string;
@@ -175,6 +180,7 @@ type ResolvedAccount = {
   name?: string;
   baseUrl: string;
   apiKey: string;
+  directConnect: boolean;
   privatePathTemplate: string;
   groupPathTemplate: string;
   defaultTo?: string;
@@ -706,6 +712,7 @@ class VoceChatApprovalForwarderService {
     const handler = this.createApprovalRouteHandler();
     this.approvalRouteUnregister = registerPluginHttpRoute({
       path: routePath,
+      auth: "plugin",
       handler: handler as any,
       pluginId: CHANNEL_ID,
       accountId: DEFAULT_ACCOUNT_ID,
@@ -1596,6 +1603,7 @@ function resolveVoceChatAccount(cfg: OpenClawConfig, accountId?: string | null):
     name: normalizeString(merged.name) || undefined,
     baseUrl: sanitizeBaseUrl(normalizeString(merged.baseUrl)),
     apiKey: normalizeString(merged.apiKey),
+    directConnect: parseBoolean(merged.directConnect, false),
     privatePathTemplate: normalizeString(merged.privatePathTemplate) || DEFAULT_PRIVATE_PATH_TEMPLATE,
     groupPathTemplate: normalizeString(merged.groupPathTemplate) || DEFAULT_GROUP_PATH_TEMPLATE,
     defaultTo: normalizeString(merged.defaultTo) || undefined,
@@ -2498,12 +2506,16 @@ async function requestBinaryViaFetch(params: {
   headers: Record<string, string>;
   signal: AbortSignal;
   maxBytes: number;
+  directConnect?: boolean;
 }): Promise<{ status: number; ok: boolean; body: Buffer; contentType: string; contentLength?: number }> {
   const response = await fetch(params.url, {
     method: "GET",
     headers: params.headers,
     signal: params.signal,
-  });
+    ...(shouldUseVoceChatDirectConnect(params.url, params.directConnect === true)
+      ? { dispatcher: DIRECT_FETCH_DISPATCHER }
+      : {}),
+  } as RequestInit & { dispatcher?: Dispatcher });
   const contentType = normalizeMimeType(response.headers.get("content-type"));
   const contentLength = parseOptionalSize(response.headers.get("content-length"));
   if (contentLength !== undefined && contentLength > params.maxBytes) {
@@ -2613,7 +2625,15 @@ async function requestInboundBinaryResource(params: {
   headers: Record<string, string>;
   signal: AbortSignal;
   maxBytes: number;
+  directConnect?: boolean;
 }): Promise<{ status: number; ok: boolean; body: Buffer; contentType: string; contentLength?: number }> {
+  if (shouldUseVoceChatDirectConnect(params.url, params.directConnect === true)) {
+    return await requestBinaryViaFetch({
+      ...params,
+      directConnect: true,
+    });
+  }
+
   if (canUseLoopbackFallback(params.url)) {
     try {
       return await requestBinaryViaLoopback(params);
@@ -3011,6 +3031,7 @@ async function hydrateInboundAttachments(params: {
         },
         signal: controller.signal,
         maxBytes: DEFAULT_INBOUND_MEDIA_MAX_BYTES,
+        directConnect: account.directConnect,
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
@@ -3376,13 +3397,32 @@ function canUseLoopbackFallback(rawUrl: string): boolean {
   }
 }
 
+function shouldUseVoceChatDirectConnect(rawUrl: string, directConnect = false): boolean {
+  if (directConnect) return true;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+    return isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 async function requestVoceChatApi(params: {
   url: string;
   method: "POST";
   headers: Record<string, string>;
   body: string | Buffer;
   signal: AbortSignal;
+  directConnect?: boolean;
 }): Promise<VoceChatHttpResponse> {
+  if (shouldUseVoceChatDirectConnect(params.url, params.directConnect === true)) {
+    return await requestVoceChatApiViaFetch({
+      ...params,
+      directConnect: true,
+    });
+  }
+
   if (canUseLoopbackFallback(params.url)) {
     try {
       return await requestVoceChatApiViaLoopback(params);
@@ -3422,13 +3462,17 @@ async function requestVoceChatApiViaFetch(params: {
   headers: Record<string, string>;
   body: string | Buffer;
   signal: AbortSignal;
+  directConnect?: boolean;
 }): Promise<VoceChatHttpResponse> {
   const response = await fetch(params.url, {
     method: params.method,
     headers: params.headers,
     body: params.body as BodyInit,
     signal: params.signal,
-  });
+    ...(shouldUseVoceChatDirectConnect(params.url, params.directConnect === true)
+      ? { dispatcher: DIRECT_FETCH_DISPATCHER }
+      : {}),
+  } as RequestInit & { dispatcher?: Dispatcher });
 
   const body = await response.text();
   return {
@@ -3598,6 +3642,7 @@ async function prepareVoceChatFileUpload(params: {
       filename: params.fileName,
     }),
     signal: params.signal,
+    directConnect: params.account.directConnect,
   });
 
   if (!response.ok) {
@@ -3642,6 +3687,7 @@ async function uploadVoceChatFile(params: {
     },
     body: multipart.body,
     signal: params.signal,
+    directConnect: params.account.directConnect,
   });
 
   if (!response.ok) {
@@ -3708,6 +3754,7 @@ async function sendVoceChatMedia(ctx: ChannelOutboundContext): Promise<OutboundD
       },
       body: JSON.stringify({ path: uploadPath }),
       signal: controller.signal,
+      directConnect: account.directConnect,
     });
 
     if (!response.ok) {
@@ -3839,6 +3886,47 @@ function buildPayloadText(text: string, mediaUrl?: string): string {
   return normalizedText;
 }
 
+async function sendVoceChatFallbackNotice(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  event: InboundEvent;
+  logger?: { warn?: (message: string) => void; error?: (message: string) => void; info?: (message: string) => void };
+  text: string;
+  reason: string;
+}): Promise<void> {
+  const text = normalizeString(params.text);
+  if (!text) return;
+
+  if (params.event.chatType === "group") {
+    try {
+      await sendVoceChatReplyToMessage({
+        cfg: params.cfg,
+        accountId: params.accountId,
+        messageId: params.event.messageId,
+        text,
+      });
+      params.logger?.warn?.(
+        `[vocechat] fallback notice sent via quote-reply account=${params.accountId} mid=${params.event.messageId} reason=${params.reason}`,
+      );
+      return;
+    } catch (err) {
+      params.logger?.warn?.(
+        `[vocechat] fallback quote-reply failed account=${params.accountId} mid=${params.event.messageId} reason=${params.reason} err=${String(err)}; fallback=group-send`,
+      );
+    }
+  }
+
+  await sendVoceChatMessage({
+    cfg: params.cfg,
+    to: params.event.replyTarget,
+    text,
+    accountId: params.accountId,
+  } as ChannelOutboundContext);
+  params.logger?.warn?.(
+    `[vocechat] fallback notice sent account=${params.accountId} mid=${params.event.messageId} reason=${params.reason} replyTarget=${params.event.replyTarget}`,
+  );
+}
+
 async function sendVoceChatMessage(
   ctx: ChannelOutboundContext,
   mediaUrl?: string,
@@ -3875,6 +3963,7 @@ async function sendVoceChatMessage(
         },
         body: text,
         signal: controller.signal,
+        directConnect: account.directConnect,
       });
       const currentBody = current.body;
 
@@ -3954,6 +4043,7 @@ async function sendVoceChatReplyToMessage(params: {
         },
         body: text,
         signal: controller.signal,
+        directConnect: account.directConnect,
       });
       const currentBody = current.body;
 
@@ -4209,6 +4299,7 @@ async function sendVoceChatReaction(params: {
       },
       body: action,
       signal: controller.signal,
+      directConnect: account.directConnect,
     });
 
     if (!response.ok) {
@@ -4508,20 +4599,71 @@ async function processInboundEvent(params: {
     );
   });
 
-  await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-    ctx: ctxPayload,
-    cfg,
-    dispatcherOptions: {
-      ...prefixOptions,
-      deliver: deliverReply,
-      onError: (err, info) => {
-        logger?.error?.(`[vocechat] ${info.kind} reply failed: ${String(err)}`);
+  let dispatchFailed = false;
+  let dispatchResult:
+    | {
+        queuedFinal?: boolean;
+        counts?: Record<string, number>;
+      }
+    | undefined;
+  try {
+    dispatchResult = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx: ctxPayload,
+      cfg,
+      dispatcherOptions: {
+        ...prefixOptions,
+        deliver: deliverReply,
+        onError: (err, info) => {
+          logger?.error?.(`[vocechat] ${info.kind} reply failed: ${String(err)}`);
+        },
       },
-    },
-    replyOptions: {
-      onModelSelected,
-    },
-  });
+      replyOptions: {
+        onModelSelected,
+      },
+    });
+  } catch (err) {
+    dispatchFailed = true;
+    logger?.error?.(
+      `[vocechat] inbound dispatch threw account=${account.accountId} mid=${event.messageId} err=${String(err)}`,
+    );
+    try {
+      await sendVoceChatFallbackNotice({
+        cfg,
+        accountId: account.accountId,
+        event,
+        logger,
+        text: DEFAULT_DISPATCH_FAILURE_TEXT,
+        reason: "dispatch_error",
+      });
+    } catch (fallbackErr) {
+      logger?.error?.(
+        `[vocechat] fallback notice failed account=${account.accountId} mid=${event.messageId} reason=dispatch_error err=${String(fallbackErr)}`,
+      );
+    }
+  }
+
+  const dispatchCounts = dispatchResult?.counts ?? {};
+  const hasVisibleReply =
+    dispatchResult?.queuedFinal === true || (dispatchCounts.final ?? 0) > 0 || (dispatchCounts.block ?? 0) > 0;
+  if (!dispatchFailed && !hasVisibleReply) {
+    logger?.warn?.(
+      `[vocechat] inbound dispatch completed without visible reply account=${account.accountId} mid=${event.messageId} counts=${JSON.stringify(dispatchCounts)}`,
+    );
+    try {
+      await sendVoceChatFallbackNotice({
+        cfg,
+        accountId: account.accountId,
+        event,
+        logger,
+        text: DEFAULT_EMPTY_REPLY_TEXT,
+        reason: "empty_reply",
+      });
+    } catch (fallbackErr) {
+      logger?.error?.(
+        `[vocechat] fallback notice failed account=${account.accountId} mid=${event.messageId} reason=empty_reply err=${String(fallbackErr)}`,
+      );
+    }
+  }
   logger?.info?.(
     `[vocechat] inbound dispatch complete account=${account.accountId} mid=${event.messageId} replyTarget=${event.replyTarget}`,
   );
@@ -4739,6 +4881,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         name: { type: "string" },
         baseUrl: { type: "string" },
         apiKey: { type: "string" },
+        directConnect: { type: "boolean" },
         privatePathTemplate: { type: "string" },
         groupPathTemplate: { type: "string" },
         ackReaction: { type: "string" },
@@ -4818,6 +4961,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
               name: { type: "string" },
               baseUrl: { type: "string" },
               apiKey: { type: "string" },
+              directConnect: { type: "boolean" },
               privatePathTemplate: { type: "string" },
               groupPathTemplate: { type: "string" },
               ackReaction: { type: "string" },
@@ -5000,6 +5144,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       const unregister = registerPluginHttpRoute({
         path: account.webhookPath,
         fallbackPath: DEFAULT_WEBHOOK_PATH,
+        auth: "plugin",
         handler: handler as any,
         pluginId: CHANNEL_ID,
         accountId: account.accountId,
