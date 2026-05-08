@@ -5535,7 +5535,8 @@ function extractProviderBalanceSummary(body: unknown): string | null {
     const balanceText = remaining == null ? "未知" : `${String(remaining)} ${unit}`;
     const subRemaining = subscription.remaining_quota ?? subscription.remaining;
     const subTotal = subscription.total_quota ?? subscription.total;
-    const count = subscription.active_subscription_count ?? asRecord(response).subscriptions?.length;
+    const subscriptions = response.subscriptions;
+    const count = subscription.active_subscription_count ?? (Array.isArray(subscriptions) ? subscriptions.length : undefined);
     const subText = subRemaining == null && subTotal == null
       ? "订阅：未返回额度"
       : `订阅：${String(subRemaining ?? "?")}/${String(subTotal ?? "?")} ${unit}`;
