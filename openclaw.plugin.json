@@ -11,7 +11,7 @@
   "version": "0.4.9",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "enabled": {
         "type": "boolean"
@@ -141,7 +141,7 @@
         "type": "object",
         "additionalProperties": {
           "type": "object",
-          "additionalProperties": false,
+          "additionalProperties": true,
           "properties": {
             "enabled": {
               "type": "boolean"
@@ -272,7 +272,7 @@
       },
       "management": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "properties": {
           "adminSenderIds": {
             "type": "array",
@@ -285,7 +285,7 @@
           },
           "quickTargets": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "properties": {
               "users": {
                 "type": "array",
@@ -305,7 +305,7 @@
       },
       "approvals": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "properties": {
           "enabled": {
             "type": "boolean"
@@ -409,6 +409,415 @@
       "label": "审批网关口令",
       "sensitive": true,
       "advanced": true
+    }
+  },
+  "channelConfigs": {
+    "vocechat": {
+      "label": "VoceChat",
+      "description": "VoceChat 入站/出站消息通道（私聊与群聊，含审批转发与 OCR）",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "directConnect": {
+            "type": "boolean"
+          },
+          "privatePathTemplate": {
+            "type": "string"
+          },
+          "groupPathTemplate": {
+            "type": "string"
+          },
+          "ackReaction": {
+            "type": "string"
+          },
+          "defaultTo": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "minimum": 1000,
+            "maximum": 120000
+          },
+          "inboundEnabled": {
+            "type": "boolean"
+          },
+          "inboundAckEnabled": {
+            "type": "boolean"
+          },
+          "inboundAckText": {
+            "type": "string"
+          },
+          "inboundParseMode": {
+            "type": "string",
+            "enum": [
+              "legacy",
+              "balanced",
+              "strict"
+            ]
+          },
+          "inboundBlockedTypes": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "inboundMinTextLength": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "inboundMaxTextLength": {
+            "type": "number",
+            "minimum": 50,
+            "maximum": 20000
+          },
+          "inboundAllowTypelessText": {
+            "type": "boolean"
+          },
+          "inboundParseDebug": {
+            "type": "boolean"
+          },
+          "webhookPath": {
+            "type": "string"
+          },
+          "webhookApiKey": {
+            "type": "string"
+          },
+          "allowFrom": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "groupAllowFrom": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "apiKey": {
+                  "type": "string"
+                },
+                "directConnect": {
+                  "type": "boolean"
+                },
+                "privatePathTemplate": {
+                  "type": "string"
+                },
+                "groupPathTemplate": {
+                  "type": "string"
+                },
+                "ackReaction": {
+                  "type": "string"
+                },
+                "defaultTo": {
+                  "type": "string"
+                },
+                "timeoutMs": {
+                  "type": "number",
+                  "minimum": 1000,
+                  "maximum": 120000
+                },
+                "inboundEnabled": {
+                  "type": "boolean"
+                },
+                "inboundAckEnabled": {
+                  "type": "boolean"
+                },
+                "inboundAckText": {
+                  "type": "string"
+                },
+                "inboundParseMode": {
+                  "type": "string",
+                  "enum": [
+                    "legacy",
+                    "balanced",
+                    "strict"
+                  ]
+                },
+                "inboundBlockedTypes": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "inboundMinTextLength": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 200
+                },
+                "inboundMaxTextLength": {
+                  "type": "number",
+                  "minimum": 50,
+                  "maximum": 20000
+                },
+                "inboundAllowTypelessText": {
+                  "type": "boolean"
+                },
+                "inboundParseDebug": {
+                  "type": "boolean"
+                },
+                "webhookPath": {
+                  "type": "string"
+                },
+                "webhookApiKey": {
+                  "type": "string"
+                },
+                "allowFrom": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "groupAllowFrom": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "management": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "adminSenderIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "panelStateFile": {
+                "type": "string"
+              },
+              "quickTargets": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "users": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "approvals": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "stateFile": {
+                "type": "string"
+              },
+              "notifyAdminSenderIds": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "fanoutToAdmins": {
+                "type": "boolean"
+              },
+              "fanoutToSession": {
+                "type": "boolean"
+              },
+              "gatewayUrl": {
+                "type": "string"
+              },
+              "gatewayToken": {
+                "type": "string"
+              },
+              "gatewayPassword": {
+                "type": "string"
+              },
+              "reconnectBaseMs": {
+                "type": "number",
+                "minimum": 250,
+                "maximum": 60000
+              },
+              "reconnectMaxMs": {
+                "type": "number",
+                "minimum": 1000,
+                "maximum": 300000
+              }
+            }
+          }
+        }
+      },
+      "uiHints": {
+        "apiKey": {
+          "label": "VoceChat API Key",
+          "sensitive": true
+        },
+        "webhookApiKey": {
+          "label": "Webhook API Key",
+          "sensitive": true
+        },
+        "management.adminSenderIds": {
+          "label": "管理员发送者 ID",
+          "advanced": true
+        },
+        "management.panelStateFile": {
+          "label": "面板状态文件",
+          "advanced": true
+        },
+        "management.quickTargets.users": {
+          "label": "快捷用户目标",
+          "advanced": true
+        },
+        "management.quickTargets.groups": {
+          "label": "快捷群目标",
+          "advanced": true
+        },
+        "approvals.enabled": {
+          "label": "启用审批转发",
+          "advanced": true
+        },
+        "approvals.stateFile": {
+          "label": "审批状态文件",
+          "advanced": true
+        },
+        "approvals.notifyAdminSenderIds": {
+          "label": "审批通知发送者 ID",
+          "advanced": true
+        },
+        "approvals.fanoutToAdmins": {
+          "label": "同时通知管理员",
+          "advanced": true
+        },
+        "approvals.fanoutToSession": {
+          "label": "同时通知原会话",
+          "advanced": true
+        },
+        "approvals.gatewayToken": {
+          "label": "审批网关 Token",
+          "sensitive": true,
+          "advanced": true
+        },
+        "approvals.gatewayPassword": {
+          "label": "审批网关口令",
+          "sensitive": true,
+          "advanced": true
+        }
+      }
     }
   }
 }
