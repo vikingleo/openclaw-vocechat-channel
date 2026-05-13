@@ -12,6 +12,7 @@
 - VoceChat 入站图片规范化为 agent 友好的 JPEG 副本
 - VoceChat 入站 OCR 文字兜底
 - VoceChat 入站短窗口图文合并
+- VoceChat 入站执行队列与远端队列控制接口
 - 私聊与群聊目标解析
 - 多账号配置
 - Telegram 卡片式管理面板
@@ -26,7 +27,7 @@
 
 1. 宿主需要向 VoceChat 发消息时，插件解析目标类型并调用对应 Bot API。
 2. VoceChat webhook 进入插件注册的 HTTP 路由后，插件完成鉴权、解析和过滤。
-3. 合法入站消息进入宿主消息处理链；如已启用确认回复，则自动回一条确认消息。
+3. 合法入站消息先进入插件侧执行队列，再串行进入宿主消息处理链；如已启用确认回复，则自动回一条确认消息。
 
 ### 入站图片链路
 
@@ -42,6 +43,14 @@
 - [docs/vocechat-inbound-image-upgrade.md](docs/vocechat-inbound-image-upgrade.md)
 - [docs/openclaw-provider-cleanup.md](docs/openclaw-provider-cleanup.md)
 - [docs/vocechat-inbound-merge-design.md](docs/vocechat-inbound-merge-design.md)
+
+### 队列控制接口
+
+插件会注册 `GET /queue/status`、`POST /queue/cancel`、`POST /queue/promote-head`、`POST /queue/interrupt-run-now`、`POST /queue/skip-current`，并同时兼容 `/vocechat/queue/*` 前缀。
+
+桌面端选中远端 VoceChat 机器人时，可以直接读取该机器人所在服务暴露的队列状态，不需要回退到本机旧队列 token 文件。当前插件能取消待执行项、提升到队首；`interrupt-run-now` 在宿主运行时暂无硬中断 hook 时会降级为“提升到队首”，`skip-current` 会返回不可用。
+
+如需鉴权，可配置 `channels.vocechat.queueControl.token` 或环境变量 `VOCECHAT_QUEUE_CONTROL_TOKEN`；客户端请求可使用 `X-Queue-Control-Token`、`X-VoceChat-Queue-Token`、`Authorization: Bearer ...` 或查询参数 `token`。
 
 ### 卡片管理
 
@@ -118,6 +127,10 @@
       defaultTo: "user:demo",
       allowFrom: ["10001"],
       groupAllowFrom: ["10001"],
+      queueControl: {
+        enabled: true,
+        token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>"
+      },
       management: {
         adminSenderIds: ["telegram:123456789", "vocechat:user:1"]
       }

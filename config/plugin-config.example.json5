@@ -16,6 +16,10 @@
       webhookApiKey: "<WEBHOOK_API_KEY>",
       allowFrom: ["10001"],
       groupAllowFrom: ["10001"],
+      queueControl: {
+        enabled: true,
+        token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>"
+      },
       management: {
         adminSenderIds: ["telegram:123456789", "vocechat:user:1"],
         panelStateFile: "./state/vocechat-panels.json",

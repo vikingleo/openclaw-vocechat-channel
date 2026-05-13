@@ -12,10 +12,12 @@
 - 2026-05-08: Located repository from OpenClaw project routing table.
 - 2026-05-08: Created `ai-agent/README.md` for stable project facts and workflow guardrails.
 - 2026-05-08: Created `ai-agent/PROGRESS.md` for ongoing development state.
+- 2026-05-13: Pulled `openclaw-vocechat-channel` with `git pull --ff-only`; repository was already up to date.
+- 2026-05-13: Added plugin-side VoceChat inbound execution queue and `/queue/*` compatible control routes so desktop can read selected remote robot queues instead of falling back to local queue token state.
+- 2026-05-13: Removed product-specific queue naming from the new queue control interface; route metadata now uses neutral VoceChat channel names and only `/queue/*` plus `/vocechat/queue/*` are registered.
 
 ## Todo
 
-- Inspect project-specific README/config in depth before first real coding task.
 - Replace generic command notes with verified install/dev/test/build commands after first successful run.
 - Decide later whether legacy OpenClaw bootstrap files should be archived, ignored, or migrated; do not delete automatically.
 
@@ -28,6 +30,8 @@
 ## Verification
 
 - `git status --short` was checked before seeding.
+- 2026-05-13: `npm run build` passes after installing local npm dependencies with `npm install --package-lock=false`.
+- 2026-05-13: `npm run build` passes after neutral queue naming changes.
 - Pre-seeding status preview:
 
 ```text
