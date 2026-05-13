@@ -44,6 +44,11 @@ const DEFAULT_WEBHOOK_BODY_TIMEOUT_MS = WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeo
 const DEFAULT_INBOUND_ACK_TEXT = "已收到，正在处理中...";
 const DEFAULT_DISPATCH_FAILURE_TEXT = "本次处理失败，暂时没有生成可发送的回复。请稍后重试。";
 const DEFAULT_EMPTY_REPLY_TEXT = "本次处理完成，但没有生成可发送的回复。请稍后重试。";
+const DEFAULT_QUEUE_CONTROL_BASE_PATHS = ["/queue", "/vocechat/queue"];
+const QUEUE_CONTROL_ENDPOINTS = ["status", "interrupt-run-now", "cancel", "promote-head", "skip-current"];
+const QUEUE_STATE_SCHEMA = "vocechat-channel-queue-state";
+const QUEUE_STATE_VERSION = 1;
+const MAX_QUEUE_AUDIT_ENTRIES = 100;
 const DEFAULT_INBOUND_BLOCKED_TYPES = ["system", "event", "notice", "typing", "status", "reaction", "like"];
 const DEFAULT_INBOUND_MERGE_WINDOW_MS = 1200;
 const DEFAULT_INBOUND_MERGE_MAX_MESSAGES = 3;
@@ -158,9 +163,17 @@ type VoceChatApprovalConfig = {
   reconnectMaxMs?: number;
 };
 
+type VoceChatQueueControlConfig = {
+  enabled?: boolean;
+  token?: string;
+};
+
 type VoceChatChannelConfig = VoceChatAccountConfig & {
   accounts?: Record<string, VoceChatAccountConfig>;
   approvals?: VoceChatApprovalConfig;
+  queueControl?: VoceChatQueueControlConfig;
+  queueControlEnabled?: boolean;
+  queueControlToken?: string;
 };
 
 type VoceChatQuickTargets = {
@@ -323,11 +336,54 @@ type PendingInboundMerge = {
   timer?: ReturnType<typeof setTimeout>;
 };
 
+type VoceChatQueueItem = {
+  queueKey: string;
+  queueItemId: string;
+  messageId: string;
+  accountId: string;
+  accountName: string;
+  routeName: string;
+  target: string;
+  webhookPath: string;
+  previewText: string;
+  hasMedia: boolean;
+  queuedAt: number;
+  startedAt?: number;
+  event: InboundEvent;
+};
+
+type VoceChatExecutionQueue = {
+  queueKey: string;
+  accountId: string;
+  accountName: string;
+  routeName: string;
+  target: string;
+  webhookPath: string;
+  current: VoceChatQueueItem | null;
+  pending: VoceChatQueueItem[];
+};
+
+type VoceChatQueueAuditEntry = {
+  ts: number;
+  action: string;
+  queue_key: string;
+  queue_item_id: string;
+  preview_text: string;
+};
+
+type VoceChatQueueControlSettings = {
+  enabled: boolean;
+  token: string;
+};
+
 let runtimeRef: PluginRuntime | null = null;
 const activeRouteUnregisters = new Map<string, () => void>();
+const queueControlRouteUnregisters = new Map<string, () => void>();
 const recentOutboundMessageIds = new Map<string, number>();
 const recentInboundMessageIds = new Map<string, number>();
 const pendingInboundMerges = new Map<string, PendingInboundMerge>();
+const voceChatExecutionQueues = new Map<string, VoceChatExecutionQueue>();
+const voceChatQueueAudit: VoceChatQueueAuditEntry[] = [];
 
 class VoceChatApprovalStore {
   private readonly filePath: string;
@@ -4347,6 +4403,474 @@ function readHeader(headers: Record<string, string | string[] | undefined>, key:
   return normalizeString(direct);
 }
 
+function toUnixSeconds(ms: number | undefined): number | undefined {
+  if (!ms || !Number.isFinite(ms)) return undefined;
+  return Math.floor(ms / 1000);
+}
+
+function normalizeQueueRoutePath(value: string): string {
+  const raw = normalizeString(value);
+  if (!raw) return "/queue";
+  return raw.startsWith("/") ? raw.replace(/\/+$/g, "") || "/queue" : `/${raw.replace(/\/+$/g, "")}`;
+}
+
+function buildVoceChatQueueRouteName(accountId: string): string {
+  const normalized = normalizeString(accountId).toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  return normalized && normalized !== DEFAULT_ACCOUNT_ID
+    ? `vocechat-inbound-channel-${normalized}`
+    : "vocechat-inbound-channel";
+}
+
+function buildVoceChatQueueKey(accountId: string, event: InboundEvent): string {
+  const routeName = buildVoceChatQueueRouteName(accountId);
+  const target = normalizeString(event.replyTarget) || `${event.chatType}:${event.conversationId}`;
+  return `vocechat-queue:${routeName}:${target || "unknown"}`;
+}
+
+function appendVoceChatQueueAudit(entry: Omit<VoceChatQueueAuditEntry, "ts">): void {
+  voceChatQueueAudit.push({
+    ts: Math.floor(nowMs() / 1000),
+    ...entry,
+  });
+  if (voceChatQueueAudit.length > MAX_QUEUE_AUDIT_ENTRIES) {
+    voceChatQueueAudit.splice(0, voceChatQueueAudit.length - MAX_QUEUE_AUDIT_ENTRIES);
+  }
+}
+
+function buildVoceChatQueueItem(account: ResolvedAccount, event: InboundEvent): VoceChatQueueItem {
+  const queueKey = buildVoceChatQueueKey(account.accountId, event);
+  const messageId = normalizeString(event.messageId) || randomUUID();
+  const target = normalizeString(event.replyTarget) || `${event.chatType}:${event.conversationId}`;
+  return {
+    queueKey,
+    queueItemId: messageId,
+    messageId,
+    accountId: account.accountId,
+    accountName: normalizeString(account.name) || "VoceChat Channel",
+    routeName: buildVoceChatQueueRouteName(account.accountId),
+    target,
+    webhookPath: account.webhookPath,
+    previewText: clipAuditSegment(event.text || event.originalText || messageId, 500),
+    hasMedia: event.attachments.length > 0 || event.localFiles.length > 0 || event.imageUrls.length > 0,
+    queuedAt: nowMs(),
+    event,
+  };
+}
+
+function ensureVoceChatExecutionQueue(item: VoceChatQueueItem): VoceChatExecutionQueue {
+  const existing = voceChatExecutionQueues.get(item.queueKey);
+  if (existing) {
+    existing.accountName = item.accountName;
+    existing.routeName = item.routeName;
+    existing.target = item.target;
+    existing.webhookPath = item.webhookPath;
+    return existing;
+  }
+  const queue: VoceChatExecutionQueue = {
+    queueKey: item.queueKey,
+    accountId: item.accountId,
+    accountName: item.accountName,
+    routeName: item.routeName,
+    target: item.target,
+    webhookPath: item.webhookPath,
+    current: null,
+    pending: [],
+  };
+  voceChatExecutionQueues.set(item.queueKey, queue);
+  return queue;
+}
+
+function buildVoceChatQueueItemSnapshot(
+  item: VoceChatQueueItem,
+  state: "current" | "pending",
+  position: number | null,
+): Record<string, unknown> {
+  return {
+    message_id: item.messageId,
+    queue_item_id: item.queueItemId,
+    queue_key: item.queueKey,
+    state,
+    preview_text: item.previewText,
+    queued_at: toUnixSeconds(item.queuedAt),
+    started_at: state === "current" ? toUnixSeconds(item.startedAt) : undefined,
+    queue_position: position ?? undefined,
+    available_actions: state === "pending" ? ["interrupt_run_now", "promote_to_head", "cancel_queued_item"] : [],
+    has_media: item.hasMedia,
+  };
+}
+
+function getRequestOrigin(req: { headers: Record<string, string | string[] | undefined> }): string {
+  const forwardedProto = readHeader(req.headers, "x-forwarded-proto").split(",")[0]?.trim();
+  const forwardedHost = readHeader(req.headers, "x-forwarded-host").split(",")[0]?.trim();
+  const host = forwardedHost || readHeader(req.headers, "host");
+  if (!host) return "";
+  const proto = forwardedProto || "http";
+  return `${proto}://${host}`;
+}
+
+function joinOriginPath(origin: string, routePath: string): string {
+  const normalizedPath = normalizeQueueRoutePath(routePath);
+  return origin ? `${origin.replace(/\/+$/g, "")}${normalizedPath}` : normalizedPath;
+}
+
+function buildVoceChatQueueSnapshot(origin: string, basePath: string): Record<string, unknown> {
+  const controlBaseURL = joinOriginPath(origin, basePath);
+  const queues = Array.from(voceChatExecutionQueues.values())
+    .filter((queue) => queue.current || queue.pending.length > 0)
+    .map((queue) => ({
+      queue_key: queue.queueKey,
+      route_name: queue.routeName,
+      target: queue.target,
+      server_url: origin || undefined,
+      control_base_url: controlBaseURL,
+      account_id: queue.accountId,
+      program_id: "vocechat-channel",
+      program_name: "VoceChat Channel",
+      bot_name: queue.accountName || "VoceChat Channel",
+      bot_webhook_url: origin ? joinOriginPath(origin, queue.webhookPath) : queue.webhookPath,
+      running: Boolean(queue.current),
+      current: queue.current ? buildVoceChatQueueItemSnapshot(queue.current, "current", null) : null,
+      pending: queue.pending.map((item, index) => buildVoceChatQueueItemSnapshot(item, "pending", index + 1)),
+      pending_count: queue.pending.length,
+    }));
+
+  return {
+    schema: QUEUE_STATE_SCHEMA,
+    version: QUEUE_STATE_VERSION,
+    current_server_url: origin || undefined,
+    control_base_url: controlBaseURL,
+    queues,
+    audit: voceChatQueueAudit.slice(-MAX_QUEUE_AUDIT_ENTRIES),
+  };
+}
+
+function runNextVoceChatQueueItem(
+  queueKey: string,
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  },
+): void {
+  const queue = voceChatExecutionQueues.get(queueKey);
+  if (!queue || queue.current) return;
+
+  const item = queue.pending.shift();
+  if (!item) {
+    voceChatExecutionQueues.delete(queueKey);
+    return;
+  }
+
+  queue.current = item;
+  item.startedAt = nowMs();
+  appendVoceChatQueueAudit({
+    action: "start",
+    queue_key: item.queueKey,
+    queue_item_id: item.queueItemId,
+    preview_text: item.previewText,
+  });
+
+  void (async () => {
+    try {
+      await processInboundEvent({
+        accountId: item.accountId,
+        event: item.event,
+        skipAcceptanceCheck: true,
+        logger,
+      });
+    } catch (err) {
+      logger?.error?.(`[vocechat] queued inbound dispatch failed queue=${queueKey} item=${item.queueItemId} err=${String(err)}`);
+    } finally {
+      appendVoceChatQueueAudit({
+        action: "finish",
+        queue_key: item.queueKey,
+        queue_item_id: item.queueItemId,
+        preview_text: item.previewText,
+      });
+      const latest = voceChatExecutionQueues.get(queueKey);
+      if (latest?.current?.queueItemId === item.queueItemId) {
+        latest.current = null;
+      }
+      runNextVoceChatQueueItem(queueKey, logger);
+    }
+  })();
+}
+
+function enqueueVoceChatExecution(params: {
+  account: ResolvedAccount;
+  event: InboundEvent;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): void {
+  const item = buildVoceChatQueueItem(params.account, params.event);
+  const queue = ensureVoceChatExecutionQueue(item);
+  queue.pending.push(item);
+  appendVoceChatQueueAudit({
+    action: "enqueue",
+    queue_key: item.queueKey,
+    queue_item_id: item.queueItemId,
+    preview_text: item.previewText,
+  });
+  if (!queue.current) {
+    runNextVoceChatQueueItem(item.queueKey, params.logger);
+  }
+}
+
+async function enqueueVoceChatExecutionByAccountId(params: {
+  accountId: string;
+  event: InboundEvent;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): Promise<void> {
+  const runtime = getVoceChatRuntime();
+  const cfg = await runtime.config.loadConfig();
+  const account = resolveVoceChatAccount(cfg, params.accountId);
+  enqueueVoceChatExecution({
+    account,
+    event: params.event,
+    logger: params.logger,
+  });
+}
+
+function clearVoceChatExecutionQueuesForAccount(
+  accountId: string,
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  },
+): void {
+  for (const [queueKey, queue] of voceChatExecutionQueues.entries()) {
+    if (queue.accountId !== accountId) continue;
+    const dropped = queue.pending.splice(0);
+    for (const item of dropped) {
+      appendVoceChatQueueAudit({
+        action: "drop_queued_item",
+        queue_key: queue.queueKey,
+        queue_item_id: item.queueItemId,
+        preview_text: item.previewText,
+      });
+    }
+    if (dropped.length > 0) {
+      logger?.info?.(
+        `[vocechat] execution queue dropped pending account=${accountId} queue=${queueKey} pendingCount=${dropped.length}`,
+      );
+    }
+    if (!queue.current) {
+      voceChatExecutionQueues.delete(queueKey);
+    }
+  }
+}
+
+function removePendingQueueItem(queue: VoceChatExecutionQueue, queueItemId: string): VoceChatQueueItem | null {
+  const index = queue.pending.findIndex((item) => item.queueItemId === queueItemId || item.messageId === queueItemId);
+  if (index < 0) return null;
+  const [item] = queue.pending.splice(index, 1);
+  return item ?? null;
+}
+
+function promotePendingQueueItem(queue: VoceChatExecutionQueue, queueItemId: string): VoceChatQueueItem | null {
+  const item = removePendingQueueItem(queue, queueItemId);
+  if (!item) return null;
+  queue.pending.unshift(item);
+  return item;
+}
+
+function resolveVoceChatQueueControlSettings(cfg: OpenClawConfig): VoceChatQueueControlSettings {
+  const section = getChannelConfig(cfg);
+  const queueControl = asRecord(section.queueControl);
+  const envToken = normalizeString(process.env.VOCECHAT_QUEUE_CONTROL_TOKEN);
+  return {
+    enabled: parseBoolean(queueControl.enabled ?? section.queueControlEnabled, true),
+    token: normalizeString(queueControl.token) || normalizeString(section.queueControlToken) || envToken,
+  };
+}
+
+function isQueueControlAuthorized(
+  req: { headers: Record<string, string | string[] | undefined>; url?: string },
+  settings: VoceChatQueueControlSettings,
+): boolean {
+  if (!settings.token) return true;
+  const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+  const candidates = [
+    readHeader(req.headers, "x-queue-control-token"),
+    readHeader(req.headers, "x-vocechat-queue-token"),
+    readHeader(req.headers, "x-api-key"),
+    normalizeString(requestUrl.searchParams.get("token")),
+  ];
+  const authorization = readHeader(req.headers, "authorization");
+  if (authorization.toLowerCase().startsWith("bearer ")) {
+    candidates.push(authorization.slice("bearer ".length).trim());
+  }
+  return candidates.some((candidate) => candidate === settings.token);
+}
+
+function writeQueueControlError(
+  res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void },
+  status: number,
+  error: string,
+  detail?: string,
+): void {
+  writeJson(res, status, { ok: false, error, ...(detail ? { detail } : {}) });
+}
+
+function createQueueControlHandler(params: {
+  basePath: string;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}) {
+  const basePath = normalizeQueueRoutePath(params.basePath);
+  return async (
+    req: { method?: string; url?: string; headers: Record<string, string | string[] | undefined> },
+    res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void },
+  ) => {
+    const method = normalizeString(req.method).toUpperCase() || "GET";
+    if (method === "OPTIONS") {
+      writeJson(res, 200, { ok: true });
+      return;
+    }
+
+    const runtime = getVoceChatRuntime();
+    const cfg = await runtime.config.loadConfig();
+    const settings = resolveVoceChatQueueControlSettings(cfg);
+    if (!settings.enabled) {
+      writeQueueControlError(res, 404, "queue_control_disabled");
+      return;
+    }
+    if (!isQueueControlAuthorized(req, settings)) {
+      writeQueueControlError(res, 403, "forbidden");
+      return;
+    }
+
+    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+    const endpoint = normalizeString(requestUrl.pathname.slice(basePath.length)).replace(/^\/+/, "") || "status";
+    if (method === "GET" && endpoint === "status") {
+      writeJson(res, 200, {
+        ok: true,
+        ...buildVoceChatQueueSnapshot(getRequestOrigin(req), basePath),
+      });
+      return;
+    }
+    if (method !== "POST") {
+      writeQueueControlError(res, 405, "method_not_allowed");
+      return;
+    }
+
+    let body: Record<string, unknown> = {};
+    try {
+      const raw = await readRequestTextWithLimit(req as any, 4096);
+      body = raw.trim() ? asRecord(JSON.parse(raw)) : {};
+    } catch (err) {
+      writeQueueControlError(res, 400, "invalid_json", String(err));
+      return;
+    }
+
+    const queueKey = normalizeString(body.queue_key);
+    const queueItemId = normalizeString(body.queue_item_id);
+    const queue = voceChatExecutionQueues.get(queueKey);
+    if (!queueKey || !queueItemId) {
+      writeQueueControlError(res, 400, "missing_queue_identifiers");
+      return;
+    }
+    if (!queue) {
+      writeQueueControlError(res, 404, "queue_not_found");
+      return;
+    }
+
+    if (endpoint === "cancel") {
+      const item = removePendingQueueItem(queue, queueItemId);
+      if (!item) {
+        writeQueueControlError(res, 404, "queue_item_not_found");
+        return;
+      }
+      appendVoceChatQueueAudit({
+        action: "cancel_queued_item",
+        queue_key: queue.queueKey,
+        queue_item_id: item.queueItemId,
+        preview_text: item.previewText,
+      });
+      writeJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (endpoint === "promote-head" || endpoint === "interrupt-run-now") {
+      const item = promotePendingQueueItem(queue, queueItemId);
+      if (!item) {
+        writeQueueControlError(res, 404, "queue_item_not_found");
+        return;
+      }
+      appendVoceChatQueueAudit({
+        action: endpoint === "interrupt-run-now" ? "interrupt_run_now" : "promote_to_head",
+        queue_key: queue.queueKey,
+        queue_item_id: item.queueItemId,
+        preview_text: item.previewText,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        ...(endpoint === "interrupt-run-now"
+          ? { degraded: true, message: "当前通道插件暂不能硬中断当前执行项，已将该排队项提升到队首。" }
+          : {}),
+      });
+      if (!queue.current) runNextVoceChatQueueItem(queue.queueKey, params.logger);
+      return;
+    }
+
+    if (endpoint === "skip-current") {
+      writeQueueControlError(res, 409, "current_interrupt_unavailable", "当前通道插件暂不能硬中断当前执行项。");
+      return;
+    }
+
+    params.logger?.warn?.(`[vocechat] queue control unknown endpoint=${endpoint}`);
+    writeQueueControlError(res, 404, "not_found");
+  };
+}
+
+function registerVoceChatQueueControlRoutes(logger?: {
+  info?: (message: string) => void;
+  warn?: (message: string) => void;
+  error?: (message: string) => void;
+}): void {
+  for (const unregister of queueControlRouteUnregisters.values()) {
+    unregister();
+  }
+  queueControlRouteUnregisters.clear();
+
+  for (const basePath of DEFAULT_QUEUE_CONTROL_BASE_PATHS) {
+    const normalizedBasePath = normalizeQueueRoutePath(basePath);
+    const handler = createQueueControlHandler({ basePath: normalizedBasePath, logger });
+    for (const endpoint of QUEUE_CONTROL_ENDPOINTS) {
+      const routePath = `${normalizedBasePath}/${endpoint}`;
+      const unregister = registerPluginHttpRoute({
+        path: routePath,
+        auth: "plugin",
+        handler: handler as any,
+        pluginId: CHANNEL_ID,
+        accountId: DEFAULT_ACCOUNT_ID,
+        replaceExisting: true,
+        log: (message) => logger?.info?.(message),
+      });
+      queueControlRouteUnregisters.set(routePath, unregister);
+    }
+  }
+  logger?.info?.(`[vocechat] queue control routes registered bases=${DEFAULT_QUEUE_CONTROL_BASE_PATHS.join(",")}`);
+}
+
+function unregisterVoceChatQueueControlRoutes(): void {
+  for (const unregister of queueControlRouteUnregisters.values()) {
+    unregister();
+  }
+  queueControlRouteUnregisters.clear();
+}
+
 async function processInboundEvent(params: {
   accountId: string;
   event: InboundEvent;
@@ -4693,10 +5217,9 @@ async function flushInboundMerge(params: {
     `[vocechat] inbound merge produced account=${pending.accountId} key=${params.key} textLen=${event.text.length} attachmentCount=${event.attachments.length}`,
   );
 
-  await processInboundEvent({
+  await enqueueVoceChatExecutionByAccountId({
     accountId: pending.accountId,
     event,
-    skipAcceptanceCheck: true,
     logger: params.logger,
   });
 }
@@ -4712,13 +5235,10 @@ function enqueueInboundMergeOrDispatch(params: {
 }): void {
   const { account, event, logger } = params;
   if (!shouldHoldInboundEventForMerge(account, event)) {
-    void processInboundEvent({
-      accountId: account.accountId,
+    enqueueVoceChatExecution({
+      account,
       event,
-      skipAcceptanceCheck: true,
       logger,
-    }).catch((err) => {
-      logger?.error?.(`[vocechat] inbound dispatch failed: ${String(err)}`);
     });
     return;
   }
@@ -4940,6 +5460,16 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
             { type: "array", items: { oneOf: [{ type: "string" }, { type: "number" }] } },
           ],
         },
+        queueControl: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            token: { type: "string" },
+          },
+        },
+        queueControlEnabled: { type: "boolean" },
+        queueControlToken: { type: "string" },
         management: {
           type: "object",
           additionalProperties: false,
@@ -5062,6 +5592,15 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         label: "面板状态文件",
         advanced: true,
       },
+      "queueControl.enabled": {
+        label: "队列控制接口",
+        advanced: true,
+      },
+      "queueControl.token": {
+        label: "队列控制 Token",
+        sensitive: true,
+        advanced: true,
+      },
     },
   },
   config: {
@@ -5131,6 +5670,11 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
         warn: (message) => ctx.log?.warn(message),
         error: (message) => ctx.log?.error(message),
       });
+      clearVoceChatExecutionQueuesForAccount(ctx.accountId, {
+        info: (message) => ctx.log?.info(message),
+        warn: (message) => ctx.log?.warn(message),
+        error: (message) => ctx.log?.error(message),
+      });
 
       const handler = createWebhookHandler({
         accountId: account.accountId,
@@ -5169,6 +5713,11 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
       if (fn) fn();
       activeRouteUnregisters.delete(routeKey);
       clearPendingInboundMergesForAccount(ctx.accountId, {
+        info: (message) => ctx.log?.info(message),
+        warn: (message) => ctx.log?.warn(message),
+        error: (message) => ctx.log?.error(message),
+      });
+      clearVoceChatExecutionQueuesForAccount(ctx.accountId, {
         info: (message) => ctx.log?.info(message),
         warn: (message) => ctx.log?.warn(message),
         error: (message) => ctx.log?.error(message),
@@ -5535,7 +6084,8 @@ function extractProviderBalanceSummary(body: unknown): string | null {
     const balanceText = remaining == null ? "未知" : `${String(remaining)} ${unit}`;
     const subRemaining = subscription.remaining_quota ?? subscription.remaining;
     const subTotal = subscription.total_quota ?? subscription.total;
-    const count = subscription.active_subscription_count ?? asRecord(response).subscriptions?.length;
+    const subscriptions = response.subscriptions;
+    const count = subscription.active_subscription_count ?? (Array.isArray(subscriptions) ? subscriptions.length : undefined);
     const subText = subRemaining == null && subTotal == null
       ? "订阅：未返回额度"
       : `订阅：${String(subRemaining ?? "?")}/${String(subTotal ?? "?")} ${unit}`;
@@ -6699,6 +7249,12 @@ const plugin = {
   description: "VoceChat inbound/outbound channel integration",
   register(api: OpenClawPluginApi) {
     setVoceChatRuntime(api.runtime);
+    const pluginLogger = {
+      info: (message: string) => api.logger.info(message),
+      warn: (message: string) => api.logger.warn(message),
+      error: (message: string) => api.logger.error(message),
+    };
+    registerVoceChatQueueControlRoutes(pluginLogger);
     api.registerChannel({ plugin: voceChatChannel });
     registerVoceChatManagementCommand(api);
     registerCommandCatalogCommands(api);
@@ -6709,6 +7265,15 @@ const plugin = {
     registerWriterReviewCommand(api);
     registerWriterApproveCommand(api);
     registerWriterTaskCommand(api);
+    api.registerService?.({
+      id: "vocechat-queue-control",
+      start: async () => {
+        registerVoceChatQueueControlRoutes(pluginLogger);
+      },
+      stop: async () => {
+        unregisterVoceChatQueueControlRoutes();
+      },
+    });
     api.registerService?.({
       id: "vocechat-approval-forwarder",
       start: async () => {

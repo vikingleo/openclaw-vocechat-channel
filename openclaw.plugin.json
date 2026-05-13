@@ -137,6 +137,24 @@
           }
         ]
       },
+      "queueControl": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "queueControlEnabled": {
+        "type": "boolean"
+      },
+      "queueControlToken": {
+        "type": "string"
+      },
       "accounts": {
         "type": "object",
         "additionalProperties": {
@@ -378,6 +396,15 @@
     },
     "management.quickTargets.groups": {
       "label": "快捷群目标",
+      "advanced": true
+    },
+    "queueControl.enabled": {
+      "label": "队列控制接口",
+      "advanced": true
+    },
+    "queueControl.token": {
+      "label": "队列控制 Token",
+      "sensitive": true,
       "advanced": true
     },
     "approvals.enabled": {
