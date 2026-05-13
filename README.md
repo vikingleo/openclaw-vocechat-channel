@@ -48,7 +48,9 @@
 
 插件会注册 `GET /queue/status`、`POST /queue/cancel`、`POST /queue/promote-head`、`POST /queue/interrupt-run-now`、`POST /queue/skip-current`，并同时兼容 `/vocechat/queue/*` 前缀。
 
-桌面端选中远端 VoceChat 机器人时，可以直接读取该机器人所在服务暴露的队列状态，不需要回退到本机旧队列 token 文件。当前插件能取消待执行项、提升到队首；`interrupt-run-now` 在宿主运行时暂无硬中断 hook 时会降级为“提升到队首”，`skip-current` 会返回不可用。
+桌面端选中远端 VoceChat 机器人时，可以直接读取该机器人所在服务暴露的队列状态，不需要回退到本机旧队列 token 文件。当前插件能取消待执行项、提升到队首；`interrupt-run-now` 在宿主运行时暂无硬中断 hook 时会降级为“提升到队首”。`skip-current` 会从插件侧释放当前项并继续处理后续队列；宿主里已经开始的旧模型调用可能仍会继续，但该队列项的迟到回复会被丢弃。
+
+队列当前项默认 10 分钟超时，超时后插件会标记当前项为 `timeout`、释放当前项并继续下一条。可用 `channels.vocechat.queueControl.itemTimeoutMs` 或环境变量 `VOCECHAT_QUEUE_ITEM_TIMEOUT_MS` 调整，范围为 10000 到 3600000 毫秒。
 
 如需鉴权，可配置 `channels.vocechat.queueControl.token` 或环境变量 `VOCECHAT_QUEUE_CONTROL_TOKEN`；客户端请求可使用 `X-Queue-Control-Token`、`X-VoceChat-Queue-Token`、`Authorization: Bearer ...` 或查询参数 `token`。
 
@@ -129,7 +131,8 @@
       groupAllowFrom: ["10001"],
       queueControl: {
         enabled: true,
-        token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>"
+        token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>",
+        itemTimeoutMs: 600000
       },
       management: {
         adminSenderIds: ["telegram:123456789", "vocechat:user:1"]
@@ -615,6 +618,8 @@ sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/re
   - 是否发送入站确认及确认内容
 - `allowFrom` / `groupAllowFrom`
   - 私聊和群聊允许发送者
+- `queueControl.itemTimeoutMs`
+  - 入站执行队列当前项超时时间，默认 600000 ms
 - `accounts`
   - 多账号配置
 - `management.adminSenderIds`

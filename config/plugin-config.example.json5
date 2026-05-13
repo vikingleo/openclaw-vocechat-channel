@@ -18,7 +18,8 @@
       groupAllowFrom: ["10001"],
       queueControl: {
         enabled: true,
-        token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>"
+        token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>",
+        itemTimeoutMs: 600000
       },
       management: {
         adminSenderIds: ["telegram:123456789", "vocechat:user:1"],

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "openclaw-runtime-check",
+  "type": "command",
+  "source": "openclaw health --json && curl -fsS http://127.0.0.1:18789/queue/status",
+  "summary": "Gateway restarted with vocechat loaded and connected; queue status endpoint returned ok with empty queues.",
+  "verifier": "Codex 2026-05-14"
+}

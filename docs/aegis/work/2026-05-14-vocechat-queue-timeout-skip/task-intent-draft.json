@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "Prevent one stuck VoceChat inbound queue item from blocking later messages.",
+  "scope": "Plugin-side queue owner, queue control route, late reply guard, config/docs/tests.",
+  "changeKinds": [
+    "bugfix"
+  ],
+  "riskHints": [
+    "Host model calls may continue after plugin-side timeout; plugin must drop late delivery from terminal queue items."
+  ]
+}

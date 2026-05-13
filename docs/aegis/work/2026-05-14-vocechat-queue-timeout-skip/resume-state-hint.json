@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-14-vocechat-queue-timeout-skip",
+  "lastCheckpointRef": "docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/todo-checkpoint-draft.json",
+  "resumeInstruction": "If resumed, inspect git status and the final evidence commands before further edits.",
+  "knownPartialWork": [
+    "Confirmed RED test before implementation.",
+    "Added queue helper and tests.",
+    "Integrated queue timeout, skip-current, account-stop release, and late reply guard.",
+    "Updated manifest, runtime schema, config example, and README.",
+    "Built, tested, refreshed registry, restarted gateway, and checked runtime queue status."
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/10-intent.md",
+    "docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/20-checkpoint.md",
+    "docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/todo-checkpoint-draft.json"
+  ],
+  "unsafeToAssume": [
+    "Do not assume host model calls are hard-aborted; plugin only releases its own queue and drops late plugin deliveries."
+  ]
+}

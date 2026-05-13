@@ -27,7 +27,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "clean": "rm -rf dist",
-    "doctor": "sh scripts/doctor.sh"
+    "doctor": "sh scripts/doctor.sh",
+    "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "sharp": "^0.34.5",

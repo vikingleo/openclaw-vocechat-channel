@@ -146,6 +146,11 @@
           },
           "token": {
             "type": "string"
+          },
+          "itemTimeoutMs": {
+            "type": "number",
+            "minimum": 10000,
+            "maximum": 3600000
           }
         }
       },
@@ -407,6 +412,10 @@
       "sensitive": true,
       "advanced": true
     },
+    "queueControl.itemTimeoutMs": {
+      "label": "队列项超时",
+      "advanced": true
+    },
     "approvals.enabled": {
       "label": "启用审批转发",
       "advanced": true
@@ -580,6 +589,11 @@
               },
               "token": {
                 "type": "string"
+              },
+              "itemTimeoutMs": {
+                "type": "number",
+                "minimum": 10000,
+                "maximum": 3600000
               }
             }
           },
@@ -839,6 +853,10 @@
         "queueControl.token": {
           "label": "队列控制 Token",
           "sensitive": true,
+          "advanced": true
+        },
+        "queueControl.itemTimeoutMs": {
+          "label": "队列项超时",
           "advanced": true
         },
         "approvals.enabled": {

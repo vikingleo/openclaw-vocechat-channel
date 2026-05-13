@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "npm-test-green",
+  "type": "command",
+  "source": "npm test",
+  "summary": "Build succeeded and node:test queue helper tests passed: 3 tests, 0 failures.",
+  "verifier": "Codex 2026-05-14"
+}

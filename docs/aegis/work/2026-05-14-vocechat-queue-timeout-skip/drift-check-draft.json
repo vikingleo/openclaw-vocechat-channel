@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-14-vocechat-queue-timeout-skip",
+  "taskIntentRef": "docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/task-intent-draft.json",
+  "baselineRefs": [
+    "index.ts queue owner",
+    "README queue control section"
+  ],
+  "scopeStatus": "Stayed within VoceChat plugin queue owner, queue control API, docs/config/tests.",
+  "compatStatus": "Webhook parsing and outbound VoceChat API shape unchanged; skip-current response is additive behavior for an existing endpoint.",
+  "retirementStatus": "Old unavailable skip-current behavior replaced; interrupt-run-now degraded behavior retained until host exposes hard abort.",
+  "newRiskSignals": [
+    "Gateway health reported transient eventLoop degraded due CPU, but plugins loaded and queue endpoint responded."
+  ],
+  "decision": "continue"
+}

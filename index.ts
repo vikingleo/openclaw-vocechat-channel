@@ -32,6 +32,12 @@ import type {
 
 import { ControlPanelStore } from "./src/panel-store.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
+import {
+  canQueueItemDeliver,
+  releaseCurrentQueueItem,
+  startNextQueueItem,
+  type VoceChatQueueTerminalReason,
+} from "./src/vocechat-queue.js";
 
 const CHANNEL_ID = "vocechat";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -49,6 +55,9 @@ const QUEUE_CONTROL_ENDPOINTS = ["status", "interrupt-run-now", "cancel", "promo
 const QUEUE_STATE_SCHEMA = "vocechat-channel-queue-state";
 const QUEUE_STATE_VERSION = 1;
 const MAX_QUEUE_AUDIT_ENTRIES = 100;
+const DEFAULT_QUEUE_ITEM_TIMEOUT_MS = 10 * 60 * 1000;
+const MIN_QUEUE_ITEM_TIMEOUT_MS = 10 * 1000;
+const MAX_QUEUE_ITEM_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_INBOUND_BLOCKED_TYPES = ["system", "event", "notice", "typing", "status", "reaction", "like"];
 const DEFAULT_INBOUND_MERGE_WINDOW_MS = 1200;
 const DEFAULT_INBOUND_MERGE_MAX_MESSAGES = 3;
@@ -166,6 +175,7 @@ type VoceChatApprovalConfig = {
 type VoceChatQueueControlConfig = {
   enabled?: boolean;
   token?: string;
+  itemTimeoutMs?: number;
 };
 
 type VoceChatChannelConfig = VoceChatAccountConfig & {
@@ -348,7 +358,12 @@ type VoceChatQueueItem = {
   previewText: string;
   hasMedia: boolean;
   queuedAt: number;
+  timeoutMs: number;
   startedAt?: number;
+  deadlineAt?: number;
+  terminalReason?: VoceChatQueueTerminalReason;
+  terminalAt?: number;
+  timer?: ReturnType<typeof setTimeout>;
   event: InboundEvent;
 };
 
@@ -374,6 +389,7 @@ type VoceChatQueueAuditEntry = {
 type VoceChatQueueControlSettings = {
   enabled: boolean;
   token: string;
+  itemTimeoutMs: number;
 };
 
 let runtimeRef: PluginRuntime | null = null;
@@ -4437,7 +4453,7 @@ function appendVoceChatQueueAudit(entry: Omit<VoceChatQueueAuditEntry, "ts">): v
   }
 }
 
-function buildVoceChatQueueItem(account: ResolvedAccount, event: InboundEvent): VoceChatQueueItem {
+function buildVoceChatQueueItem(account: ResolvedAccount, event: InboundEvent, timeoutMs: number): VoceChatQueueItem {
   const queueKey = buildVoceChatQueueKey(account.accountId, event);
   const messageId = normalizeString(event.messageId) || randomUUID();
   const target = normalizeString(event.replyTarget) || `${event.chatType}:${event.conversationId}`;
@@ -4453,6 +4469,7 @@ function buildVoceChatQueueItem(account: ResolvedAccount, event: InboundEvent): 
     previewText: clipAuditSegment(event.text || event.originalText || messageId, 500),
     hasMedia: event.attachments.length > 0 || event.localFiles.length > 0 || event.imageUrls.length > 0,
     queuedAt: nowMs(),
+    timeoutMs,
     event,
   };
 }
@@ -4493,8 +4510,12 @@ function buildVoceChatQueueItemSnapshot(
     preview_text: item.previewText,
     queued_at: toUnixSeconds(item.queuedAt),
     started_at: state === "current" ? toUnixSeconds(item.startedAt) : undefined,
+    deadline_at: state === "current" ? toUnixSeconds(item.deadlineAt) : undefined,
+    timeout_ms: item.timeoutMs,
+    terminal_reason: item.terminalReason,
+    terminal_at: toUnixSeconds(item.terminalAt),
     queue_position: position ?? undefined,
-    available_actions: state === "pending" ? ["interrupt_run_now", "promote_to_head", "cancel_queued_item"] : [],
+    available_actions: state === "pending" ? ["interrupt_run_now", "promote_to_head", "cancel_queued_item"] : ["skip_current"],
     has_media: item.hasMedia,
   };
 }
@@ -4544,6 +4565,70 @@ function buildVoceChatQueueSnapshot(origin: string, basePath: string): Record<st
   };
 }
 
+function clearVoceChatQueueItemTimer(item: VoceChatQueueItem): void {
+  if (!item.timer) return;
+  clearTimeout(item.timer);
+  item.timer = undefined;
+}
+
+function releaseVoceChatCurrentQueueItem(params: {
+  queue: VoceChatExecutionQueue;
+  queueItemId?: string;
+  reason: VoceChatQueueTerminalReason;
+  action: string;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): VoceChatQueueItem | null {
+  const item = releaseCurrentQueueItem(params.queue, {
+    queueItemId: params.queueItemId,
+    nowMs: nowMs(),
+    reason: params.reason,
+  });
+  if (!item) return null;
+
+  clearVoceChatQueueItemTimer(item);
+  appendVoceChatQueueAudit({
+    action: params.action,
+    queue_key: item.queueKey,
+    queue_item_id: item.queueItemId,
+    preview_text: item.previewText,
+  });
+  return item;
+}
+
+function scheduleVoceChatQueueItemTimeout(
+  item: VoceChatQueueItem,
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  },
+): void {
+  if (item.timeoutMs <= 0) return;
+  item.timer = setTimeout(() => {
+    const queue = voceChatExecutionQueues.get(item.queueKey);
+    if (!queue?.current || queue.current.queueItemId !== item.queueItemId) return;
+
+    const released = releaseVoceChatCurrentQueueItem({
+      queue,
+      queueItemId: item.queueItemId,
+      reason: "timeout",
+      action: "timeout_current",
+      logger,
+    });
+    if (!released) return;
+
+    logger?.warn?.(
+      `[vocechat] execution queue timed out queue=${item.queueKey} item=${item.queueItemId} timeoutMs=${item.timeoutMs}`,
+    );
+    runNextVoceChatQueueItem(item.queueKey, logger);
+  }, item.timeoutMs);
+  item.timer.unref?.();
+}
+
 function runNextVoceChatQueueItem(
   queueKey: string,
   logger?: {
@@ -4555,41 +4640,53 @@ function runNextVoceChatQueueItem(
   const queue = voceChatExecutionQueues.get(queueKey);
   if (!queue || queue.current) return;
 
-  const item = queue.pending.shift();
+  const item = startNextQueueItem(queue, {
+    nowMs: nowMs(),
+    timeoutMs: queue.pending[0]?.timeoutMs ?? DEFAULT_QUEUE_ITEM_TIMEOUT_MS,
+  });
   if (!item) {
     voceChatExecutionQueues.delete(queueKey);
     return;
   }
 
-  queue.current = item;
-  item.startedAt = nowMs();
   appendVoceChatQueueAudit({
     action: "start",
     queue_key: item.queueKey,
     queue_item_id: item.queueItemId,
     preview_text: item.previewText,
   });
+  scheduleVoceChatQueueItemTimeout(item, logger);
 
   void (async () => {
     try {
       await processInboundEvent({
         accountId: item.accountId,
         event: item.event,
+        queueItem: item,
         skipAcceptanceCheck: true,
         logger,
       });
     } catch (err) {
       logger?.error?.(`[vocechat] queued inbound dispatch failed queue=${queueKey} item=${item.queueItemId} err=${String(err)}`);
     } finally {
-      appendVoceChatQueueAudit({
-        action: "finish",
-        queue_key: item.queueKey,
-        queue_item_id: item.queueItemId,
-        preview_text: item.previewText,
-      });
+      if (item.terminalReason && item.terminalReason !== "finish") {
+        logger?.info?.(
+          `[vocechat] queued inbound dispatch ended after terminal release queue=${queueKey} item=${item.queueItemId} reason=${item.terminalReason}`,
+        );
+        return;
+      }
+
       const latest = voceChatExecutionQueues.get(queueKey);
       if (latest?.current?.queueItemId === item.queueItemId) {
-        latest.current = null;
+        releaseVoceChatCurrentQueueItem({
+          queue: latest,
+          queueItemId: item.queueItemId,
+          reason: "finish",
+          action: "finish",
+          logger,
+        });
+      } else {
+        clearVoceChatQueueItemTimer(item);
       }
       runNextVoceChatQueueItem(queueKey, logger);
     }
@@ -4599,13 +4696,14 @@ function runNextVoceChatQueueItem(
 function enqueueVoceChatExecution(params: {
   account: ResolvedAccount;
   event: InboundEvent;
+  queueItemTimeoutMs: number;
   logger?: {
     info?: (message: string) => void;
     warn?: (message: string) => void;
     error?: (message: string) => void;
   };
 }): void {
-  const item = buildVoceChatQueueItem(params.account, params.event);
+  const item = buildVoceChatQueueItem(params.account, params.event, params.queueItemTimeoutMs);
   const queue = ensureVoceChatExecutionQueue(item);
   queue.pending.push(item);
   appendVoceChatQueueAudit({
@@ -4634,6 +4732,7 @@ async function enqueueVoceChatExecutionByAccountId(params: {
   enqueueVoceChatExecution({
     account,
     event: params.event,
+    queueItemTimeoutMs: resolveVoceChatQueueItemTimeoutMs(cfg),
     logger: params.logger,
   });
 }
@@ -4662,6 +4761,20 @@ function clearVoceChatExecutionQueuesForAccount(
         `[vocechat] execution queue dropped pending account=${accountId} queue=${queueKey} pendingCount=${dropped.length}`,
       );
     }
+    if (queue.current) {
+      const released = releaseVoceChatCurrentQueueItem({
+        queue,
+        queueItemId: queue.current.queueItemId,
+        reason: "account_stop",
+        action: "account_stop_current",
+        logger,
+      });
+      if (released) {
+        logger?.info?.(
+          `[vocechat] execution queue released current account=${accountId} queue=${queueKey} item=${released.queueItemId} reason=account_stop`,
+        );
+      }
+    }
     if (!queue.current) {
       voceChatExecutionQueues.delete(queueKey);
     }
@@ -4682,6 +4795,17 @@ function promotePendingQueueItem(queue: VoceChatExecutionQueue, queueItemId: str
   return item;
 }
 
+function resolveVoceChatQueueItemTimeoutMs(cfg: OpenClawConfig): number {
+  const section = getChannelConfig(cfg);
+  const queueControl = asRecord(section.queueControl);
+  return parseBoundedInt(
+    queueControl.itemTimeoutMs ?? process.env.VOCECHAT_QUEUE_ITEM_TIMEOUT_MS,
+    DEFAULT_QUEUE_ITEM_TIMEOUT_MS,
+    MIN_QUEUE_ITEM_TIMEOUT_MS,
+    MAX_QUEUE_ITEM_TIMEOUT_MS,
+  );
+}
+
 function resolveVoceChatQueueControlSettings(cfg: OpenClawConfig): VoceChatQueueControlSettings {
   const section = getChannelConfig(cfg);
   const queueControl = asRecord(section.queueControl);
@@ -4689,6 +4813,7 @@ function resolveVoceChatQueueControlSettings(cfg: OpenClawConfig): VoceChatQueue
   return {
     enabled: parseBoolean(queueControl.enabled ?? section.queueControlEnabled, true),
     token: normalizeString(queueControl.token) || normalizeString(section.queueControlToken) || envToken,
+    itemTimeoutMs: resolveVoceChatQueueItemTimeoutMs(cfg),
   };
 }
 
@@ -4734,6 +4859,12 @@ function createQueueControlHandler(params: {
     res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void },
   ) => {
     const method = normalizeString(req.method).toUpperCase() || "GET";
+    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+    const endpoint = normalizeString(requestUrl.pathname.slice(basePath.length)).replace(/^\/+/, "") || "status";
+    const userAgent = clipAuditSegment(readHeader(req.headers, "user-agent"), 120);
+    params.logger?.info?.(
+      `[vocechat] queue control request method=${method} base=${basePath} endpoint=${endpoint} origin=${getRequestOrigin(req) || "-"} ua=${userAgent || "-"}`,
+    );
     if (method === "OPTIONS") {
       writeJson(res, 200, { ok: true });
       return;
@@ -4751,8 +4882,6 @@ function createQueueControlHandler(params: {
       return;
     }
 
-    const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1");
-    const endpoint = normalizeString(requestUrl.pathname.slice(basePath.length)).replace(/^\/+/, "") || "status";
     if (method === "GET" && endpoint === "status") {
       writeJson(res, 200, {
         ok: true,
@@ -4825,7 +4954,24 @@ function createQueueControlHandler(params: {
     }
 
     if (endpoint === "skip-current") {
-      writeQueueControlError(res, 409, "current_interrupt_unavailable", "当前通道插件暂不能硬中断当前执行项。");
+      const item = releaseVoceChatCurrentQueueItem({
+        queue,
+        queueItemId,
+        reason: "skip_current",
+        action: "skip_current",
+        logger: params.logger,
+      });
+      if (!item) {
+        writeQueueControlError(res, 404, "current_queue_item_not_found");
+        return;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        degraded: true,
+        skipped_queue_item_id: item.queueItemId,
+        message: "已从插件侧队列跳过当前项；宿主中已开始的旧模型调用可能仍会继续，但该项的迟到回复会被丢弃。",
+      });
+      runNextVoceChatQueueItem(queue.queueKey, params.logger);
       return;
     }
 
@@ -4874,6 +5020,7 @@ function unregisterVoceChatQueueControlRoutes(): void {
 async function processInboundEvent(params: {
   accountId: string;
   event: InboundEvent;
+  queueItem?: VoceChatQueueItem;
   skipAcceptanceCheck?: boolean;
   logger?: {
     info?: (message: string) => void;
@@ -4886,6 +5033,8 @@ async function processInboundEvent(params: {
   const cfg = await runtime.config.loadConfig();
   const account = resolveVoceChatAccount(cfg, accountId);
   let event = params.event;
+  const queueItem = params.queueItem;
+  const canDeliverForCurrentQueueItem = (): boolean => canQueueItemDeliver(queueItem);
   if (!skipAcceptanceCheck && !acceptInboundEventForProcessing({ account, event, logger })) return;
 
   const route = runtime.channel.routing.resolveAgentRoute({
@@ -5074,6 +5223,13 @@ async function processInboundEvent(params: {
   });
 
   const deliverReply = createNormalizedOutboundDeliverer(async (payload) => {
+    if (!canDeliverForCurrentQueueItem()) {
+      logger?.warn?.(
+        `[vocechat] drop late queued reply account=${account.accountId} mid=${event.messageId} queueItem=${queueItem?.queueItemId ?? "-"} reason=${queueItem?.terminalReason ?? "inactive"}`,
+      );
+      return;
+    }
+
     const mediaUrls = resolveOutboundMediaUrls(payload);
     const text = normalizeString(payload.text);
 
@@ -5151,14 +5307,20 @@ async function processInboundEvent(params: {
       `[vocechat] inbound dispatch threw account=${account.accountId} mid=${event.messageId} err=${String(err)}`,
     );
     try {
-      await sendVoceChatFallbackNotice({
-        cfg,
-        accountId: account.accountId,
-        event,
-        logger,
-        text: DEFAULT_DISPATCH_FAILURE_TEXT,
-        reason: "dispatch_error",
-      });
+      if (canDeliverForCurrentQueueItem()) {
+        await sendVoceChatFallbackNotice({
+          cfg,
+          accountId: account.accountId,
+          event,
+          logger,
+          text: DEFAULT_DISPATCH_FAILURE_TEXT,
+          reason: "dispatch_error",
+        });
+      } else {
+        logger?.warn?.(
+          `[vocechat] drop late fallback notice account=${account.accountId} mid=${event.messageId} queueItem=${queueItem?.queueItemId ?? "-"} reason=${queueItem?.terminalReason ?? "inactive"}`,
+        );
+      }
     } catch (fallbackErr) {
       logger?.error?.(
         `[vocechat] fallback notice failed account=${account.accountId} mid=${event.messageId} reason=dispatch_error err=${String(fallbackErr)}`,
@@ -5174,14 +5336,20 @@ async function processInboundEvent(params: {
       `[vocechat] inbound dispatch completed without visible reply account=${account.accountId} mid=${event.messageId} counts=${JSON.stringify(dispatchCounts)}`,
     );
     try {
-      await sendVoceChatFallbackNotice({
-        cfg,
-        accountId: account.accountId,
-        event,
-        logger,
-        text: DEFAULT_EMPTY_REPLY_TEXT,
-        reason: "empty_reply",
-      });
+      if (canDeliverForCurrentQueueItem()) {
+        await sendVoceChatFallbackNotice({
+          cfg,
+          accountId: account.accountId,
+          event,
+          logger,
+          text: DEFAULT_EMPTY_REPLY_TEXT,
+          reason: "empty_reply",
+        });
+      } else {
+        logger?.warn?.(
+          `[vocechat] drop late fallback notice account=${account.accountId} mid=${event.messageId} queueItem=${queueItem?.queueItemId ?? "-"} reason=${queueItem?.terminalReason ?? "inactive"}`,
+        );
+      }
     } catch (fallbackErr) {
       logger?.error?.(
         `[vocechat] fallback notice failed account=${account.accountId} mid=${event.messageId} reason=empty_reply err=${String(fallbackErr)}`,
@@ -5227,6 +5395,7 @@ async function flushInboundMerge(params: {
 function enqueueInboundMergeOrDispatch(params: {
   account: ResolvedAccount;
   event: InboundEvent;
+  queueItemTimeoutMs: number;
   logger?: {
     info?: (message: string) => void;
     warn?: (message: string) => void;
@@ -5238,6 +5407,7 @@ function enqueueInboundMergeOrDispatch(params: {
     enqueueVoceChatExecution({
       account,
       event,
+      queueItemTimeoutMs: params.queueItemTimeoutMs,
       logger,
     });
     return;
@@ -5371,6 +5541,7 @@ function createWebhookHandler(params: {
     enqueueInboundMergeOrDispatch({
       account,
       event,
+      queueItemTimeoutMs: resolveVoceChatQueueItemTimeoutMs(cfg),
       logger,
     });
   };
@@ -5466,6 +5637,7 @@ const voceChatChannel: ChannelPlugin<ResolvedAccount> = {
           properties: {
             enabled: { type: "boolean" },
             token: { type: "string" },
+            itemTimeoutMs: { type: "number", minimum: 10000, maximum: 3600000 },
           },
         },
         queueControlEnabled: { type: "boolean" },

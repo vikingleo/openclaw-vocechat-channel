@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-14-vocechat-queue-timeout-skip",
+  "currentTodo": "All implementation todos completed; final status reporting remains.",
+  "completedTodos": [
+    "Confirmed RED test before implementation.",
+    "Added queue helper and tests.",
+    "Integrated queue timeout, skip-current, account-stop release, and late reply guard.",
+    "Updated manifest, runtime schema, config example, and README.",
+    "Built, tested, refreshed registry, restarted gateway, and checked runtime queue status."
+  ],
+  "activeSlice": "Completion candidate.",
+  "evidenceRefs": [
+    "npm-test-green",
+    "openclaw-runtime-check"
+  ],
+  "blockedOn": null,
+  "nextStep": "Report concise outcome and residual risk.",
+  "updatedAt": "2026-05-14"
+}

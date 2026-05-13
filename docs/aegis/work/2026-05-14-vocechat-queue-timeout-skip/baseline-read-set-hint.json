@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "candidateDocs": [
+    "index.ts queue owner and processInboundEvent",
+    "README queue control section"
+  ],
+  "whyRelevant": "These define current execution queue behavior and public queue control contract.",
+  "missingAuthority": []
+}
