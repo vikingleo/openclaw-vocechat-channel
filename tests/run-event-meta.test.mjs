@@ -6,6 +6,7 @@ import {
   buildVoceChatRunEventMeta,
   mapVoceChatRunEventMessageType,
 } from "../dist/src/run-event-meta.js";
+import { createVoceChatDispatchRunEventBridge } from "../dist/src/dispatch-run-events.js";
 
 function parseMeta(markdown) {
   const firstLine = markdown.split("\n", 1)[0];
@@ -58,4 +59,79 @@ test("message type mapping provides kind and phase compatibility fields", () => 
   assert.equal(meta.kind, "approval");
   assert.equal(meta.phase, "requested");
   assert.equal(meta.runId, "approval-1");
+});
+
+test("dispatch hook message types map to stable compatibility fields", () => {
+  assert.deepEqual(mapVoceChatRunEventMessageType("tool_call"), {
+    kind: "tool",
+    phase: "tool-call",
+  });
+  assert.deepEqual(mapVoceChatRunEventMessageType("tool_result"), {
+    kind: "tool",
+    phase: "tool-result",
+  });
+  assert.deepEqual(mapVoceChatRunEventMessageType("command_output"), {
+    kind: "execution",
+    phase: "command-output",
+  });
+  assert.deepEqual(mapVoceChatRunEventMessageType("patch"), {
+    kind: "artifact",
+    phase: "patch",
+  });
+  assert.deepEqual(mapVoceChatRunEventMessageType("plan_update"), {
+    kind: "progress",
+    phase: "plan-update",
+  });
+});
+
+test("dispatch bridge emits typed tool events and suppresses default progress", async () => {
+  const delivered = [];
+  const bridge = createVoceChatDispatchRunEventBridge({
+    runId: "run-1",
+    queueKey: "queue:user:7",
+    queueItemId: "run-1",
+    deliver: async (text) => {
+      delivered.push(text);
+    },
+  });
+
+  assert.equal(bridge.replyOptions.suppressDefaultToolProgressMessages, true);
+  bridge.replyOptions.onToolStart({ toolName: "exec_command", preview: "npm test" });
+  bridge.replyOptions.onToolResult({ toolName: "exec_command", ok: true, output: "pass" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(delivered.length, 2);
+  const first = parseMeta(delivered[0]);
+  assert.equal(first.messageType, "tool_call");
+  assert.equal(first.kind, "tool");
+  assert.equal(first.phase, "tool-call");
+  assert.equal(first.runId, "run-1");
+  assert.equal(first.queue_key, "queue:user:7");
+
+  const second = parseMeta(delivered[1]);
+  assert.equal(second.messageType, "tool_result");
+  assert.equal(second.kind, "tool");
+  assert.equal(second.phase, "tool-result");
+});
+
+test("reasoning stream emits a status notice without raw reasoning text", async () => {
+  const delivered = [];
+  const bridge = createVoceChatDispatchRunEventBridge({
+    runId: "run-2",
+    deliver: async (text) => {
+      delivered.push(text);
+    },
+  });
+
+  bridge.replyOptions.onReasoningStream({
+    status: "delta",
+    text: "RAW INTERNAL REASONING SHOULD NOT LEAK",
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(delivered.length, 1);
+  const meta = parseMeta(delivered[0]);
+  assert.equal(meta.messageType, "reasoning");
+  assert.equal(meta.phase, "reasoning");
+  assert.doesNotMatch(delivered[0], /RAW INTERNAL REASONING/);
 });

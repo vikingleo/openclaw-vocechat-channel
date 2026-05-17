@@ -17,6 +17,7 @@
 - 新增 `/writertask` 聊天命令，返回要求 `main` 为章节先创建监督 task 并回报 task id/路径的模板
 - 新增插件侧 VoceChat 入站执行队列与 `/queue/*` 控制接口，桌面端可直接读取远端机器人队列状态，不再依赖本机旧队列 token fallback
 - 为 VoceChat 过程类通知加入隐藏运行事件元数据注释，覆盖队列、审批、管理和执行记录类消息
+- 接入 OpenClaw dispatch 归一化回调，向 VoceChat 发送工具开始/结果、命令输出、patch、计划、审批、partial reply 等细粒度过程事件，reasoning 仅发送状态摘要
 
 ## 0.4.9 - 2026-03-14
 

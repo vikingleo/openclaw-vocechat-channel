@@ -16,6 +16,7 @@
 - 2026-05-13: Added plugin-side VoceChat inbound execution queue and `/queue/*` compatible control routes so desktop can read selected remote robot queues instead of falling back to local queue token state.
 - 2026-05-13: Removed product-specific queue naming from the new queue control interface; route metadata now uses neutral VoceChat channel names and only `/queue/*` plus `/vocechat/queue/*` are registered.
 - 2026-05-17: Added hidden VoceChat run-event metadata for process, queue, approval, management, and execution-record notices.
+- 2026-05-18: Connected OpenClaw dispatch callbacks (`onToolStart`, `onToolResult`, `onCommandOutput`, `onPatchSummary`, `onPlanUpdate`, `onApprovalEvent`, `onItemEvent`, `onPartialReply`, `onReasoningStream`, `onBlockReplyQueued`) to typed VoceChat run-event messages without forwarding raw reasoning text.
 
 ## Todo
 
@@ -34,6 +35,7 @@
 - 2026-05-13: `npm run build` passes after installing local npm dependencies with `npm install --package-lock=false`.
 - 2026-05-13: `npm run build` passes after neutral queue naming changes.
 - 2026-05-17: `npm test` passes, including build and run-event metadata tests.
+- 2026-05-18: `git diff --check` and `npm test` passed after dispatch callback run-event bridge changes.
 - Pre-seeding status preview:
 
 ```text

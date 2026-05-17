@@ -31,6 +31,7 @@ import type {
 } from "openclaw/plugin-sdk";
 
 import { ControlPanelStore } from "./src/panel-store.js";
+import { createVoceChatDispatchRunEventBridge } from "./src/dispatch-run-events.js";
 import { buildHiddenRunEventMarkdown, type VoceChatRunEventMeta } from "./src/run-event-meta.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 import {
@@ -5380,6 +5381,26 @@ async function processInboundEvent(params: {
       } as ChannelOutboundContext,
     );
   });
+  const dispatchRunEvents = createVoceChatDispatchRunEventBridge({
+    runId: queueItem?.queueItemId ?? event.messageId,
+    queueKey: queueItem?.queueKey,
+    queueItemId: queueItem?.queueItemId,
+    logger,
+    deliver: async (text) => {
+      if (!canDeliverForCurrentQueueItem()) {
+        logger?.warn?.(
+          `[vocechat] drop late run event account=${account.accountId} mid=${event.messageId} queueItem=${queueItem?.queueItemId ?? "-"} reason=${queueItem?.terminalReason ?? "inactive"}`,
+        );
+        return;
+      }
+      await sendVoceChatMessage({
+        cfg,
+        to: event.replyTarget,
+        text,
+        accountId: account.accountId,
+      } as ChannelOutboundContext);
+    },
+  });
 
   let dispatchFailed = false;
   let dispatchResult:
@@ -5401,6 +5422,7 @@ async function processInboundEvent(params: {
       },
       replyOptions: {
         onModelSelected,
+        ...dispatchRunEvents.replyOptions,
       },
     });
   } catch (err) {

@@ -56,14 +56,14 @@
 
 ### 运行事件元数据
 
-插件发出的过程类通知会在 Markdown 正文前加入一行隐藏元数据，便于 VoceChat 客户端识别队列、审批和管理类运行事件：
+插件发出的过程类通知会在 Markdown 正文前加入一行隐藏元数据，便于 VoceChat 客户端识别队列、审批、管理和执行过程运行事件：
 
 ```markdown
 <!-- hermes-meta:{"schema":"vocechat-run-event/v1","source":"openclaw-vocechat-channel","messageType":"queue","kind":"queue","phase":"queued","runId":"...","sequence":1,"queue_key":"...","queue_item_id":"..."} -->
 已加入执行队列，当前排在第 1 位。
 ```
 
-当前覆盖：入站接收确认、队列排队通知、空回复/失败兜底执行记录、审批请求/结果通知、非 Telegram 管理命令文本。最终模型回复仍保持普通消息，不附加 raw thinking。
+当前覆盖：入站接收确认、队列排队通知、空回复/失败兜底执行记录、审批请求/结果通知、非 Telegram 管理命令文本，以及 OpenClaw dispatch 归一化回调中的工具开始、工具结果、命令输出、patch 摘要、计划更新、审批事件、item 事件、partial reply、reasoning 状态和 block queued。最终模型回复仍保持普通消息；`onReasoningStream` 只转发状态摘要，不附加 raw thinking。
 
 ### 卡片管理
 
