@@ -84,7 +84,7 @@ test("dispatch hook message types map to stable compatibility fields", () => {
   });
 });
 
-test("dispatch bridge emits typed tool events and suppresses default progress", async () => {
+test("dispatch bridge suppresses developer execution events for chat channels", async () => {
   const delivered = [];
   const bridge = createVoceChatDispatchRunEventBridge({
     runId: "run-1",
@@ -98,23 +98,18 @@ test("dispatch bridge emits typed tool events and suppresses default progress", 
   assert.equal(bridge.replyOptions.suppressDefaultToolProgressMessages, true);
   bridge.replyOptions.onToolStart({ toolName: "exec_command", preview: "npm test" });
   bridge.replyOptions.onToolResult({ toolName: "exec_command", ok: true, output: "pass" });
+  bridge.replyOptions.onCommandOutput({ command: "npm test", exitCode: 0, output: "pass" });
+  bridge.replyOptions.onPatchSummary({ summary: "changed index.ts" });
+  bridge.replyOptions.onPlanUpdate({ summary: "running tests" });
+  bridge.replyOptions.onItemEvent({ type: "step", summary: "read file" });
+  bridge.replyOptions.onPartialReply({ text: "partial assistant text" });
+  bridge.replyOptions.onBlockReplyQueued({ type: "text", summary: "queued" });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(delivered.length, 2);
-  const first = parseMeta(delivered[0]);
-  assert.equal(first.messageType, "tool_call");
-  assert.equal(first.kind, "tool");
-  assert.equal(first.phase, "tool-call");
-  assert.equal(first.runId, "run-1");
-  assert.equal(first.queue_key, "queue:user:7");
-
-  const second = parseMeta(delivered[1]);
-  assert.equal(second.messageType, "tool_result");
-  assert.equal(second.kind, "tool");
-  assert.equal(second.phase, "tool-result");
+  assert.deepEqual(delivered, []);
 });
 
-test("reasoning stream emits a status notice without raw reasoning text", async () => {
+test("reasoning stream is not forwarded to chat", async () => {
   const delivered = [];
   const bridge = createVoceChatDispatchRunEventBridge({
     runId: "run-2",
@@ -129,9 +124,5 @@ test("reasoning stream emits a status notice without raw reasoning text", async 
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(delivered.length, 1);
-  const meta = parseMeta(delivered[0]);
-  assert.equal(meta.messageType, "reasoning");
-  assert.equal(meta.phase, "reasoning");
-  assert.doesNotMatch(delivered[0], /RAW INTERNAL REASONING/);
+  assert.deepEqual(delivered, []);
 });

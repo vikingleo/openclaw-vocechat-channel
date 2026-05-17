@@ -16,7 +16,7 @@
 - 2026-05-13: Added plugin-side VoceChat inbound execution queue and `/queue/*` compatible control routes so desktop can read selected remote robot queues instead of falling back to local queue token state.
 - 2026-05-13: Removed product-specific queue naming from the new queue control interface; route metadata now uses neutral VoceChat channel names and only `/queue/*` plus `/vocechat/queue/*` are registered.
 - 2026-05-17: Added hidden VoceChat run-event metadata for process, queue, approval, management, and execution-record notices.
-- 2026-05-18: Connected OpenClaw dispatch callbacks (`onToolStart`, `onToolResult`, `onCommandOutput`, `onPatchSummary`, `onPlanUpdate`, `onApprovalEvent`, `onItemEvent`, `onPartialReply`, `onReasoningStream`, `onBlockReplyQueued`) to typed VoceChat run-event messages without forwarding raw reasoning text.
+- 2026-05-18: Replaced OpenClaw dispatch callback forwarding with a silent chat-channel bridge so tool calls, command output, patch summaries, plan updates, partial replies, reasoning status, and queued block events do not pollute VoceChat conversations.
 
 ## Todo
 

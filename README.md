@@ -63,7 +63,7 @@
 已加入执行队列，当前排在第 1 位。
 ```
 
-当前覆盖：入站接收确认、队列排队通知、空回复/失败兜底执行记录、审批请求/结果通知、非 Telegram 管理命令文本，以及 OpenClaw dispatch 归一化回调中的工具开始、工具结果、命令输出、patch 摘要、计划更新、审批事件、item 事件、partial reply、reasoning 状态和 block queued。最终模型回复仍保持普通消息；`onReasoningStream` 只转发状态摘要，不附加 raw thinking。
+当前覆盖：入站接收确认、队列排队通知、空回复/失败兜底执行记录、审批请求/结果通知和非 Telegram 管理命令文本。聊天软件渠道不承载 OpenClaw 开发态输出流；工具开始、工具结果、命令输出、patch 摘要、计划更新、item 事件、partial reply、reasoning 状态和 block queued 等 dispatch 回调会被静默处理，最终模型回复仍通过普通回复消息发送。
 
 ### 卡片管理
 
