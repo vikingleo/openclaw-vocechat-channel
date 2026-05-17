@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildQueueTerminalNoticeText,
   canQueueItemDeliver,
   releaseCurrentQueueItem,
   startNextQueueItem,
@@ -59,4 +60,13 @@ test("releaseCurrentQueueItem refuses to release a different current item", () =
   assert.equal(released, null);
   assert.equal(queue.current, current);
   assert.equal(canQueueItemDeliver(current), true);
+});
+
+test("timeout terminal reason has a user-visible notice", () => {
+  const notice = buildQueueTerminalNoticeText("timeout");
+
+  assert.match(notice, /超时|超过|停止等待/);
+  assert.equal(buildQueueTerminalNoticeText("finish"), "");
+  assert.equal(buildQueueTerminalNoticeText("skip_current"), "");
+  assert.equal(buildQueueTerminalNoticeText("account_stop"), "");
 });

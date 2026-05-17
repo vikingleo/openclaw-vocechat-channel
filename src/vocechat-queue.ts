@@ -14,6 +14,8 @@ export type VoceChatExecutionQueueState<T extends VoceChatQueueStateItem> = {
   pending: T[];
 };
 
+const QUEUE_TIMEOUT_NOTICE_TEXT = "本次处理超过等待时间，已停止等待后续回复。请稍后重试。";
+
 export function startNextQueueItem<T extends VoceChatQueueStateItem>(
   queue: VoceChatExecutionQueueState<T>,
   options: {
@@ -56,4 +58,8 @@ export function releaseCurrentQueueItem<T extends VoceChatQueueStateItem>(
 
 export function canQueueItemDeliver(item: VoceChatQueueStateItem | null | undefined): boolean {
   return !item?.terminalReason;
+}
+
+export function buildQueueTerminalNoticeText(reason: VoceChatQueueTerminalReason): string {
+  return reason === "timeout" ? QUEUE_TIMEOUT_NOTICE_TEXT : "";
 }

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "src/vocechat-queue.ts",
+    "index.ts",
+    "/home/vkleo/.openclaw/workspace/memory/openclaw-patches/patch-openai-sdk-empty-sse-data.sh"
+  ],
+  "impactStatement": "docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/impact-statement-draft.json",
+  "compatPlan": "Compatibility boundary not yet refined.",
+  "retirementPlan": "fetch-level sanitizer retained; SDK startup patch has retirement trigger in 99-reflection.md",
+  "evidenceBundle": []
+}

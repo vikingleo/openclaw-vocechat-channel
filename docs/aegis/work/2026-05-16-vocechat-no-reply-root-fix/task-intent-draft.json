@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "Stop VoceChat inbound turns from going silent when OpenAI Responses streaming fails or queue items time out.",
+  "scope": "VoceChat queue timeout visibility and OpenClaw SSE parser runtime diagnosis.",
+  "changeKinds": [
+    "bugfix"
+  ],
+  "riskHints": []
+}

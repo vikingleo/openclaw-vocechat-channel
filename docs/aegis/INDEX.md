@@ -17,3 +17,14 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-05-14 | artifact | docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/evidence-bundle-draft-npm-test-green.json | 2026-05-14-vocechat-queue-timeout-skip evidence npm-test-green |
 | 2026-05-14 | artifact | docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/evidence-bundle-draft-openclaw-runtime-check.json | 2026-05-14-vocechat-queue-timeout-skip evidence openclaw-runtime-check |
 | 2026-05-14 | artifact | docs/aegis/work/2026-05-14-vocechat-queue-timeout-skip/resume-state-hint.json | 2026-05-14-vocechat-queue-timeout-skip resume state hint |
+| 2026-05-16 | work | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/10-intent.md | VoceChat no-reply root fix intent |
+| 2026-05-16 | work | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/20-checkpoint.md | VoceChat no-reply root fix checkpoint |
+| 2026-05-16 | work | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/90-evidence.md | VoceChat no-reply root fix evidence |
+| 2026-05-16 | work | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/99-reflection.md | VoceChat no-reply root fix reflection |
+| 2026-05-16 | artifact | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/task-intent-draft.json | VoceChat no-reply root fix task intent draft |
+| 2026-05-16 | artifact | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/baseline-read-set-hint.json | VoceChat no-reply root fix baseline read-set hint |
+| 2026-05-16 | artifact | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/impact-statement-draft.json | VoceChat no-reply root fix impact statement draft |
+| 2026-05-16 | artifact | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/todo-checkpoint-draft.json | VoceChat no-reply root fix todo checkpoint draft |
+| 2026-05-16 | artifact | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/drift-check-draft.json | VoceChat no-reply root fix drift check draft |
+| 2026-05-16 | artifact | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/gate-input-pack.json | 2026-05-16-vocechat-no-reply-root-fix gate input pack |
+| 2026-05-16 | work | docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/proof-bundle.md | 2026-05-16-vocechat-no-reply-root-fix proof bundle |

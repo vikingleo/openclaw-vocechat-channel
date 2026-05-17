@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-16-vocechat-no-reply-root-fix",
+  "taskIntentRef": "docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/task-intent-draft.json",
+  "baselineRefs": [
+    "src/vocechat-queue.ts",
+    "index.ts",
+    "/home/vkleo/.openclaw/workspace/memory/openclaw-patches/patch-openai-sdk-empty-sse-data.sh"
+  ],
+  "scopeStatus": "inside requested VoceChat no-reply root-fix scope",
+  "compatStatus": "late reply blocking retained; queue timeout now sends terminal notice; non-empty SSE JSON parsing unchanged",
+  "retirementStatus": "fetch-level sanitizer retained; SDK startup patch has retirement trigger in 99-reflection.md",
+  "newRiskSignals": [],
+  "decision": "continue"
+}

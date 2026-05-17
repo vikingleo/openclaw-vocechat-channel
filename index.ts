@@ -35,6 +35,7 @@ import { createVoceChatDispatchRunEventBridge } from "./src/dispatch-run-events.
 import { buildHiddenRunEventMarkdown, type VoceChatRunEventMeta } from "./src/run-event-meta.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 import {
+  buildQueueTerminalNoticeText,
   canQueueItemDeliver,
   releaseCurrentQueueItem,
   startNextQueueItem,
@@ -4664,6 +4665,24 @@ function scheduleVoceChatQueueItemTimeout(
     logger?.warn?.(
       `[vocechat] execution queue timed out queue=${item.queueKey} item=${item.queueItemId} timeoutMs=${item.timeoutMs}`,
     );
+    const noticeText = buildQueueTerminalNoticeText("timeout");
+    if (noticeText) {
+      void (async () => {
+        const cfg = await getVoceChatRuntime().config.loadConfig();
+        await sendVoceChatFallbackNotice({
+          cfg,
+          accountId: item.accountId,
+          event: item.event,
+          logger,
+          text: noticeText,
+          reason: "queue_timeout",
+        });
+      })().catch((err) => {
+        logger?.error?.(
+          `[vocechat] queue timeout notice failed account=${item.accountId} mid=${item.messageId} queueItem=${item.queueItemId} err=${String(err)}`,
+        );
+      });
+    }
     runNextVoceChatQueueItem(item.queueKey, logger);
   }, item.timeoutMs);
   item.timer.unref?.();

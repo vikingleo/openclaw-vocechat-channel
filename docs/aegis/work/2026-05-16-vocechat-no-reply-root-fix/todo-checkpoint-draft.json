@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-16-vocechat-no-reply-root-fix",
+  "currentTodo": "Verify workspace structure and summarize closure.",
+  "completedTodos": [],
+  "activeSlice": "completion-candidate",
+  "evidenceRefs": [
+    "docs/aegis/work/2026-05-16-vocechat-no-reply-root-fix/90-evidence.md"
+  ],
+  "blockedOn": null,
+  "nextStep": "Run Aegis bundle/check and report repair, retirement, residual risk.",
+  "updatedAt": "2026-05-16"
+}
