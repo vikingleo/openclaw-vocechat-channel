@@ -10,7 +10,7 @@ import { createVoceChatDispatchRunEventBridge } from "../dist/src/dispatch-run-e
 
 function parseMeta(markdown) {
   const firstLine = markdown.split("\n", 1)[0];
-  const match = firstLine.match(/^<!-- hermes-meta:(.*) -->$/);
+  const match = firstLine.match(/^<!-- vocechat-meta:(.*) -->$/);
   assert.ok(match, "metadata comment should be the first line");
   return JSON.parse(match[1]);
 }

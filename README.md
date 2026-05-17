@@ -59,7 +59,7 @@
 插件发出的过程类通知会在 Markdown 正文前加入一行隐藏元数据，便于 VoceChat 客户端识别队列、审批、管理和执行过程运行事件：
 
 ```markdown
-<!-- hermes-meta:{"schema":"vocechat-run-event/v1","source":"openclaw-vocechat-channel","messageType":"queue","kind":"queue","phase":"queued","runId":"...","sequence":1,"queue_key":"...","queue_item_id":"..."} -->
+<!-- vocechat-meta:{"schema":"vocechat-run-event/v1","source":"openclaw-vocechat-channel","messageType":"queue","kind":"queue","phase":"queued","runId":"...","sequence":1,"queue_key":"...","queue_item_id":"..."} -->
 已加入执行队列，当前排在第 1 位。
 ```
 

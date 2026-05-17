@@ -2,7 +2,7 @@
 
 ## Current State
 
-- Migration state: `ai-agent/` seeded for Hermes project context.
+- Migration state: `ai-agent/` seeded for project-agent context.
 - Repository path: /home/vkleo/.openclaw/workspace/development/openclaw-extensions/openclaw-vocechat-channel
 - Branch at migration: master
 - Had pre-existing uncommitted changes before seeding: yes
@@ -25,9 +25,9 @@
 
 ## Decisions
 
-- `ai-agent/README.md` is the canonical Hermes project context file.
+- `ai-agent/README.md` is the canonical project-agent context file.
 - `ai-agent/PROGRESS.md` records ongoing task/migration state.
-- Project `AGENTS.md` is not used as the new canonical Hermes project-agent directory.
+- Project `AGENTS.md` is not used as the new canonical project-agent directory.
 
 ## Verification
 

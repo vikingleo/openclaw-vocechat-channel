@@ -6,7 +6,7 @@
 - Repository path: /home/vkleo/.openclaw/workspace/development/openclaw-extensions/openclaw-vocechat-channel
 - Current branch at migration: master
 - Compatible old agent alias: (none recorded)
-- This file is Hermes-readable project context. Keep stable facts here; put temporary task state in `ai-agent/PROGRESS.md`.
+- This file is agent-readable project context. Keep stable facts here; put temporary task state in `ai-agent/PROGRESS.md`.
 
 ## Tech Stack Signals
 
@@ -15,7 +15,7 @@
 
 ## Commands Discovered
 
-These are discovered from repository marker files during OpenClaw → Hermes migration. Verify before use if the project has unusual setup.
+These are discovered from repository marker files during the project-agent migration. Verify before use if the project has unusual setup.
 
 - `npm run build`
 - `npm run clean`
@@ -40,5 +40,5 @@ These are discovered from repository marker files during OpenClaw → Hermes mig
 
 ## Migration Notes
 
-- Created by Hermes during OpenClaw → Hermes migration on 2026-05-08.
+- Created during project-agent migration on 2026-05-08.
 - Existing OpenClaw files such as `AGENTS.md`, `.openclaw/`, `BOOTSTRAP.md`, `HEARTBEAT.md`, or `IDENTITY.md` may still be present. Treat them as legacy inputs, not the new canonical project-agent home.

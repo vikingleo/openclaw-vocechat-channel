@@ -34,7 +34,7 @@ export type VoceChatRunEventMeta = {
 
 export const VOCECHAT_RUN_EVENT_SCHEMA = "vocechat-run-event/v1";
 export const VOCECHAT_RUN_EVENT_SOURCE = "openclaw-vocechat-channel";
-export const VOCECHAT_RUN_EVENT_COMMENT_PREFIX = "hermes-meta";
+export const VOCECHAT_RUN_EVENT_COMMENT_PREFIX = "vocechat-meta";
 
 let nextSequence = 1;
 
