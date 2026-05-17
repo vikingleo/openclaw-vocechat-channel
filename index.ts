@@ -31,6 +31,7 @@ import type {
 } from "openclaw/plugin-sdk";
 
 import { ControlPanelStore } from "./src/panel-store.js";
+import { buildHiddenRunEventMarkdown, type VoceChatRunEventMeta } from "./src/run-event-meta.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 import {
   canQueueItemDeliver,
@@ -656,7 +657,7 @@ class VoceChatApprovalForwarderService {
 
     const approvalCfg = resolveVoceChatApprovalSettings(this.cfg);
     const actionTokens = approvalCfg.publicBaseUrl ? createApprovalActionTokens() : undefined;
-    const text = renderVoceChatRequestedApproval(
+    const text = withVoceChatRunEventMeta(renderVoceChatRequestedApproval(
       event,
       actionTokens
         ? {
@@ -665,7 +666,14 @@ class VoceChatApprovalForwarderService {
             actionTokens,
           }
         : undefined,
-    );
+    ), {
+      messageType: "approval",
+      kind: "approval",
+      phase: "requested",
+      emphasis: "accent",
+      runId: approvalId,
+      approval_id: approvalId,
+    });
     const successfulRecipients: VoceChatApprovalRecipient[] = [];
     for (const recipient of recipients) {
       try {
@@ -703,7 +711,15 @@ class VoceChatApprovalForwarderService {
     const record = await this.store.get(approvalId);
     if (!record) return;
 
-    const text = renderVoceChatResolvedApproval(record, event);
+    const text = withVoceChatRunEventMeta(renderVoceChatResolvedApproval(record, event), {
+      messageType: "approval",
+      kind: "approval",
+      phase: "resolved",
+      emphasis: "subtle",
+      runId: approvalId,
+      approval_id: approvalId,
+      decision: event.decision,
+    });
     for (const recipient of record.recipients) {
       try {
         await sendVoceChatMessage({
@@ -731,7 +747,14 @@ class VoceChatApprovalForwarderService {
   private async processExpired(): Promise<void> {
     const expired = await this.store.listExpiredPending(Date.now());
     for (const record of expired) {
-      const text = renderVoceChatExpiredApproval(record);
+      const text = withVoceChatRunEventMeta(renderVoceChatExpiredApproval(record), {
+        messageType: "approval",
+        kind: "approval",
+        phase: "expired",
+        emphasis: "subtle",
+        runId: record.approvalId,
+        approval_id: record.approvalId,
+      });
       for (const recipient of record.recipients) {
         try {
           await sendVoceChatMessage({
@@ -3958,6 +3981,10 @@ function buildPayloadText(text: string, mediaUrl?: string): string {
   return normalizedText;
 }
 
+function withVoceChatRunEventMeta(text: string, meta: VoceChatRunEventMeta): string {
+  return buildHiddenRunEventMarkdown(text, meta);
+}
+
 async function sendVoceChatFallbackNotice(params: {
   cfg: OpenClawConfig;
   accountId: string;
@@ -3965,9 +3992,21 @@ async function sendVoceChatFallbackNotice(params: {
   logger?: { warn?: (message: string) => void; error?: (message: string) => void; info?: (message: string) => void };
   text: string;
   reason: string;
+  queueItem?: VoceChatQueueItem;
 }): Promise<void> {
+  const queueItem = params.queueItem;
   const text = normalizeString(params.text);
   if (!text) return;
+  const taggedText = withVoceChatRunEventMeta(text, {
+    messageType: "execution_record",
+    kind: "execution",
+    phase: params.reason,
+    emphasis: params.reason === "ack" ? "subtle" : "accent",
+    runId: queueItem?.queueItemId ?? params.event.messageId,
+    queue_key: queueItem?.queueKey,
+    queue_item_id: queueItem?.queueItemId,
+    reason: params.reason,
+  });
 
   if (params.event.chatType === "group") {
     try {
@@ -3975,7 +4014,7 @@ async function sendVoceChatFallbackNotice(params: {
         cfg: params.cfg,
         accountId: params.accountId,
         messageId: params.event.messageId,
-        text,
+        text: taggedText,
       });
       params.logger?.warn?.(
         `[vocechat] fallback notice sent via quote-reply account=${params.accountId} mid=${params.event.messageId} reason=${params.reason}`,
@@ -3991,7 +4030,7 @@ async function sendVoceChatFallbackNotice(params: {
   await sendVoceChatMessage({
     cfg: params.cfg,
     to: params.event.replyTarget,
-    text,
+    text: taggedText,
     accountId: params.accountId,
   } as ChannelOutboundContext);
   params.logger?.warn?.(
@@ -4693,7 +4732,50 @@ function runNextVoceChatQueueItem(
   })();
 }
 
+async function sendVoceChatQueueNotice(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  target: string;
+  text: string;
+  queueItem: VoceChatQueueItem;
+  phase: string;
+  queuePosition?: number;
+  emphasis?: "subtle" | "accent" | "emphasis";
+  action?: string;
+  logger?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+  };
+}): Promise<void> {
+  const text = normalizeString(params.text);
+  if (!text) return;
+  try {
+    await sendVoceChatMessage({
+      cfg: params.cfg,
+      to: params.target,
+      text: withVoceChatRunEventMeta(text, {
+        messageType: "queue",
+        kind: "queue",
+        phase: params.phase,
+        emphasis: params.emphasis ?? "subtle",
+        runId: params.queueItem.queueItemId,
+        queue_key: params.queueItem.queueKey,
+        queue_item_id: params.queueItem.queueItemId,
+        queue_position: params.queuePosition,
+        action: params.action,
+      }),
+      accountId: params.accountId,
+    } as ChannelOutboundContext);
+  } catch (err) {
+    params.logger?.warn?.(
+      `[vocechat] queue notice failed account=${params.accountId} queue=${params.queueItem.queueKey} item=${params.queueItem.queueItemId} phase=${params.phase} err=${String(err)}`,
+    );
+  }
+}
+
 function enqueueVoceChatExecution(params: {
+  cfg: OpenClawConfig;
   account: ResolvedAccount;
   event: InboundEvent;
   queueItemTimeoutMs: number;
@@ -4706,6 +4788,7 @@ function enqueueVoceChatExecution(params: {
   const item = buildVoceChatQueueItem(params.account, params.event, params.queueItemTimeoutMs);
   const queue = ensureVoceChatExecutionQueue(item);
   queue.pending.push(item);
+  const queuePosition = queue.current ? queue.pending.length : 0;
   appendVoceChatQueueAudit({
     action: "enqueue",
     queue_key: item.queueKey,
@@ -4714,6 +4797,19 @@ function enqueueVoceChatExecution(params: {
   });
   if (!queue.current) {
     runNextVoceChatQueueItem(item.queueKey, params.logger);
+  } else {
+    void sendVoceChatQueueNotice({
+      cfg: params.cfg,
+      accountId: item.accountId,
+      target: item.target,
+      text: `已加入执行队列，当前排在第 ${queuePosition} 位。`,
+      queueItem: item,
+      queuePosition,
+      phase: "queued",
+      emphasis: "subtle",
+      action: "enqueue",
+      logger: params.logger,
+    });
   }
 }
 
@@ -4730,6 +4826,7 @@ async function enqueueVoceChatExecutionByAccountId(params: {
   const cfg = await runtime.config.loadConfig();
   const account = resolveVoceChatAccount(cfg, params.accountId);
   enqueueVoceChatExecution({
+    cfg,
     account,
     event: params.event,
     queueItemTimeoutMs: resolveVoceChatQueueItemTimeoutMs(cfg),
@@ -5098,7 +5195,12 @@ async function processInboundEvent(params: {
         {
           cfg,
           to: event.replyTarget,
-          text: account.inboundAckText,
+          text: withVoceChatRunEventMeta(account.inboundAckText, {
+            messageType: "process_summary",
+            kind: "process",
+            phase: "ack",
+            runId: event.messageId,
+          }),
           accountId: account.accountId,
         } as ChannelOutboundContext,
       );
@@ -5315,6 +5417,7 @@ async function processInboundEvent(params: {
           logger,
           text: DEFAULT_DISPATCH_FAILURE_TEXT,
           reason: "dispatch_error",
+          queueItem,
         });
       } else {
         logger?.warn?.(
@@ -5344,6 +5447,7 @@ async function processInboundEvent(params: {
           logger,
           text: DEFAULT_EMPTY_REPLY_TEXT,
           reason: "empty_reply",
+          queueItem,
         });
       } else {
         logger?.warn?.(
@@ -5393,6 +5497,7 @@ async function flushInboundMerge(params: {
 }
 
 function enqueueInboundMergeOrDispatch(params: {
+  cfg: OpenClawConfig;
   account: ResolvedAccount;
   event: InboundEvent;
   queueItemTimeoutMs: number;
@@ -5405,6 +5510,7 @@ function enqueueInboundMergeOrDispatch(params: {
   const { account, event, logger } = params;
   if (!shouldHoldInboundEventForMerge(account, event)) {
     enqueueVoceChatExecution({
+      cfg: params.cfg,
       account,
       event,
       queueItemTimeoutMs: params.queueItemTimeoutMs,
@@ -5539,6 +5645,7 @@ function createWebhookHandler(params: {
     );
     if (!acceptInboundEventForProcessing({ account, event, logger })) return;
     enqueueInboundMergeOrDispatch({
+      cfg,
       account,
       event,
       queueItemTimeoutMs: resolveVoceChatQueueItemTimeoutMs(cfg),
@@ -6662,7 +6769,12 @@ async function handleVoceChatTelegramPanel(
 
 async function handleVoceChatGenericCommand(cfg: OpenClawConfig, parsed: VoceChatParsedCommand): Promise<ReplyPayload> {
   return {
-    text: renderVoceChatPanel(cfg, parsed.action, parsed.arg, "plain").text,
+    text: withVoceChatRunEventMeta(renderVoceChatPanel(cfg, parsed.action, parsed.arg, "plain").text, {
+      messageType: "management",
+      kind: "management",
+      phase: parsed.action,
+      action: parsed.action,
+    }),
   };
 }
 
@@ -7207,7 +7319,7 @@ async function handleVoceChatAdminEditCommand(args: string[], cfg: OpenClawConfi
 
   if (action === "list") {
     return {
-      text: [
+      text: withVoceChatRunEventMeta([
         "VoceChat 管理员设置",
         "",
         `当前管理员数量：${management.adminSenderIds.length}`,
@@ -7216,7 +7328,12 @@ async function handleVoceChatAdminEditCommand(args: string[], cfg: OpenClawConfi
         `添加：/${VOCECHAT_CONTROL_COMMAND} admin add telegram:123456789`,
         `移除：/${VOCECHAT_CONTROL_COMMAND} admin remove telegram:123456789`,
         `清空：/${VOCECHAT_CONTROL_COMMAND} admin clear`,
-      ].join("\n"),
+      ].join("\n"), {
+        messageType: "management",
+        kind: "management",
+        phase: "admin-list",
+        action: "admin-list",
+      }),
     };
   }
 
@@ -7372,13 +7489,18 @@ async function handleVoceChatDefaultTargetCommand(args: string[], cfg: OpenClawC
 
 function buildVoceChatMutationReply(summary: string): ReplyPayload {
   return {
-    text: [
+    text: withVoceChatRunEventMeta([
       "VoceChat 配置已更新",
       "",
       summary,
       "宿主将按通道配置自动热重载。",
       `可重新发送 /${VOCECHAT_CONTROL_COMMAND} 查看最新状态。`,
-    ].join("\n"),
+    ].join("\n"), {
+      messageType: "management",
+      kind: "management",
+      phase: "mutation",
+      emphasis: "accent",
+    }),
   };
 }
 
