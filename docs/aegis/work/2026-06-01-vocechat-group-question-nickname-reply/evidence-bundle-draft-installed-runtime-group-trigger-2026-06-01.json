@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "installed-runtime-group-trigger-2026-06-01",
+  "type": "command",
+  "source": "node import from /home/vkleo/.openclaw/extensions/vocechat/dist/src/vocechat-group-trigger.js",
+  "summary": "Installed extension runtime check parsed real bot uid 2 and returned shouldReply true for question, nickname, and native-mention triggers while returning false for an ordinary statement.",
+  "verifier": "node --input-type=module runtime check on 2026-06-01; exit code 0."
+}

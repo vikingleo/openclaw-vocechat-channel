@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "/home/vkleo/.openclaw/openclaw.json channels.vocechat groupAllowFrom/groupPolicy/groups"
+  ],
+  "impactStatement": "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/impact-statement-draft.json",
+  "compatPlan": "Existing text alias and native mention trigger paths must continue to reply; direct chats must remain unaffected.",
+  "retirementPlan": "Retire runtime group sender allowlist for this VoceChat channel; keep trigger-based content gate to prevent all-message auto-reply.",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-gateway-restart-2026-06-01.json",
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-installed-runtime-group-trigger-2026-06-01.json",
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-npm-test-full-2026-06-01.json",
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-npm-test-group-trigger-2026-06-01.json",
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-runtime-config-open-group-2026-06-01.json"
+  ]
+}

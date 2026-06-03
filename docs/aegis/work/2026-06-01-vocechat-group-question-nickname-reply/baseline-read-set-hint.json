@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "candidateDocs": [
+    "index.ts group inbound requireMention branch",
+    "src/vocechat-mentions.ts native mention helper"
+  ],
+  "whyRelevant": "These own current group mention gating and native mention detection.",
+  "missingAuthority": []
+}

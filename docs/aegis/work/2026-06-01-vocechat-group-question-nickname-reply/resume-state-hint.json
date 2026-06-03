@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-01-vocechat-group-question-nickname-reply",
+  "lastCheckpointRef": "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/todo-checkpoint-draft.json",
+  "resumeInstruction": "Resume by verifying npm test evidence, runtime config, installed trigger matrix, and gateway status.",
+  "knownPartialWork": [
+    "Added group trigger code/tests and synced installed extension.",
+    "Opened VoceChat group sender authorization by setting groupAllowFrom [] and groupPolicy open.",
+    "Disabled runtime requireMention for groups.* so group replies are governed by content trigger policy.",
+    "Restarted openclaw-gateway.service and confirmed VoceChat webhook registration."
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/10-intent.md",
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/20-checkpoint.md",
+    "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/todo-checkpoint-draft.json"
+  ],
+  "unsafeToAssume": [
+    "No live VoceChat group message was sent during final verification."
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "gateway-restart-2026-06-01",
+  "type": "command",
+  "source": "systemctl --user restart openclaw-gateway.service; journalctl --user -u openclaw-gateway.service",
+  "summary": "Gateway restarted successfully, active/running with MainPID 3326343; journal shows VoceChat start, webhook route registered, queue control routes registered, and approval gateway connected.",
+  "verifier": "systemctl and journalctl checks on 2026-06-01; exit code 0."
+}

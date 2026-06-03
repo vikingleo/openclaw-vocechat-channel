@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-01-vocechat-group-question-nickname-reply",
+  "currentTodo": "Implementation, runtime config, sync, and gateway restart completed; final bundle/check pending.",
+  "completedTodos": [
+    "Added group trigger code/tests and synced installed extension.",
+    "Opened VoceChat group sender authorization by setting groupAllowFrom [] and groupPolicy open.",
+    "Disabled runtime requireMention for groups.* so group replies are governed by content trigger policy.",
+    "Restarted openclaw-gateway.service and confirmed VoceChat webhook registration."
+  ],
+  "activeSlice": "completion verification",
+  "evidenceRefs": [
+    "npm test: 17/17 pass",
+    "runtime config: groupAllowFrom [], groupPolicy open, requireMention false",
+    "installed trigger runtime matrix: question/nickname/native true, ordinary false",
+    "gateway active/running MainPID=3329488"
+  ],
+  "blockedOn": null,
+  "nextStep": "Bundle/check Aegis workspace and report final result.",
+  "updatedAt": "2026-06-01"
+}

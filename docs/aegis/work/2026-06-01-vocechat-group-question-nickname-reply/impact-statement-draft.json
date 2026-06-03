@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [
+    "channel"
+  ],
+  "owners": [
+    "index.ts",
+    "src/vocechat-group-trigger.ts",
+    "tests/vocechat-group-trigger.test.mjs"
+  ],
+  "invariants": [],
+  "compatBoundary": "Existing text alias and native mention trigger paths must continue to reply; direct chats must remain unaffected.",
+  "nonGoals": [
+    "Make every group message auto-reply."
+  ]
+}

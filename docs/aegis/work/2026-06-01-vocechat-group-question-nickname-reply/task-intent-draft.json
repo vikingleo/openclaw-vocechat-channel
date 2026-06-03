@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "Group messages should no longer require a native mention; questions, explicit nickname/alias matches, and native bot mentions should receive replies while ordinary statements stay ignored.",
+  "scope": "Patch VoceChat group inbound reply trigger logic, add focused regression tests, sync installed extension, and restart gateway.",
+  "changeKinds": [
+    "behavior-change"
+  ],
+  "riskHints": [
+    "Question heuristics can over-trigger if too broad; ordinary statements must remain ignored."
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "npm-test-group-trigger-2026-06-01",
+  "type": "command",
+  "source": "npm test -- --test-name-pattern VoceChatGroupTrigger",
+  "summary": "Red turned green: helper test suite passed 5/5 group trigger checks, including question heuristics, nickname match, native mention, and ordinary statement rejection.",
+  "verifier": "Codex run on 2026-06-01 in project root; exit code 0."
+}

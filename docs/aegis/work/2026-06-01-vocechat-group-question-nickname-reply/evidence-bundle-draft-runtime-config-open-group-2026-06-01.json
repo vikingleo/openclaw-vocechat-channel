@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "runtime-config-open-group-2026-06-01",
+  "type": "command",
+  "source": "/home/vkleo/.openclaw/openclaw.json and gateway reload logs",
+  "summary": "Runtime VoceChat config now has groupAllowFrom [], groupPolicy open, and groups.*.requireMention false; journal shows config hot reload and post-restart VoceChat webhook registration.",
+  "verifier": "node config inspection and journalctl checks on 2026-06-01; exit code 0."
+}

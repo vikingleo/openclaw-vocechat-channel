@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "npm-test-full-2026-06-01",
+  "type": "command",
+  "source": "npm test",
+  "summary": "Build succeeded and node --test passed 17/17 tests across run-event metadata, group trigger policy, native mentions, and queue behavior.",
+  "verifier": "Codex run on 2026-06-01 in project root; exit code 0."
+}

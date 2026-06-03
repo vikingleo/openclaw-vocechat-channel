@@ -43,3 +43,20 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-05-31 | artifact | docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/evidence-bundle-draft-installed-helper-native-mention-2026-05-31.json | 2026-05-31-vocechat-group-native-mention-reply evidence installed-helper-native-mention-2026-05-31 |
 | 2026-05-31 | artifact | docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/gate-input-pack.json | 2026-05-31-vocechat-group-native-mention-reply gate input pack |
 | 2026-05-31 | work | docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/proof-bundle.md | 2026-05-31-vocechat-group-native-mention-reply proof bundle |
+| 2026-06-01 | work | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/10-intent.md | VoceChat group question and nickname reply policy intent |
+| 2026-06-01 | work | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/20-checkpoint.md | VoceChat group question and nickname reply policy checkpoint |
+| 2026-06-01 | work | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/90-evidence.md | VoceChat group question and nickname reply policy evidence |
+| 2026-06-01 | work | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/99-reflection.md | VoceChat group question and nickname reply policy reflection |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/task-intent-draft.json | VoceChat group question and nickname reply policy task intent draft |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/baseline-read-set-hint.json | VoceChat group question and nickname reply policy baseline read-set hint |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/impact-statement-draft.json | VoceChat group question and nickname reply policy impact statement draft |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/todo-checkpoint-draft.json | VoceChat group question and nickname reply policy todo checkpoint draft |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/drift-check-draft.json | VoceChat group question and nickname reply policy drift check draft |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/resume-state-hint.json | 2026-06-01-vocechat-group-question-nickname-reply resume state hint |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-npm-test-group-trigger-2026-06-01.json | 2026-06-01-vocechat-group-question-nickname-reply evidence npm-test-group-trigger-2026-06-01 |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-npm-test-full-2026-06-01.json | 2026-06-01-vocechat-group-question-nickname-reply evidence npm-test-full-2026-06-01 |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-installed-runtime-group-trigger-2026-06-01.json | 2026-06-01-vocechat-group-question-nickname-reply evidence installed-runtime-group-trigger-2026-06-01 |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-gateway-restart-2026-06-01.json | 2026-06-01-vocechat-group-question-nickname-reply evidence gateway-restart-2026-06-01 |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/gate-input-pack.json | 2026-06-01-vocechat-group-question-nickname-reply gate input pack |
+| 2026-06-01 | work | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/proof-bundle.md | 2026-06-01-vocechat-group-question-nickname-reply proof bundle |
+| 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-runtime-config-open-group-2026-06-01.json | 2026-06-01-vocechat-group-question-nickname-reply evidence runtime-config-open-group-2026-06-01 |

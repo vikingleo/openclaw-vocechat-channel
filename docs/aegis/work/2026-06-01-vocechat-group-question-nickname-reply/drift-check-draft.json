@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-01-vocechat-group-question-nickname-reply",
+  "taskIntentRef": "docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/task-intent-draft.json",
+  "baselineRefs": [
+    "/home/vkleo/.openclaw/openclaw.json channels.vocechat groupAllowFrom/groupPolicy/groups"
+  ],
+  "scopeStatus": "Scope expanded within user request after discovering runtime groupAllowFrom whitelist would block non-admin group members before trigger evaluation.",
+  "compatStatus": "Private allowFrom remains unchanged; group reply still requires question, nickname/alias, or native mention trigger after sender authorization is opened.",
+  "retirementStatus": "Retire runtime group sender allowlist for this VoceChat channel; keep trigger-based content gate to prevent all-message auto-reply.",
+  "newRiskSignals": [
+    "Opening group sender authorization means content trigger precision now carries more responsibility for avoiding noisy replies."
+  ],
+  "decision": "continue"
+}
