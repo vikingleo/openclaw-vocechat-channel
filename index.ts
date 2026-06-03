@@ -41,6 +41,11 @@ import {
   startNextQueueItem,
   type VoceChatQueueTerminalReason,
 } from "./src/vocechat-queue.js";
+import {
+  extractVoceChatMentionIds,
+  parseVoceChatBotUidFromApiKey,
+} from "./src/vocechat-mentions.js";
+import { evaluateVoceChatGroupReplyTrigger } from "./src/vocechat-group-trigger.js";
 
 const CHANNEL_ID = "vocechat";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -335,6 +340,7 @@ type InboundEvent = {
   timestamp: number;
   replyTarget: string;
   sourceMessageIds: string[];
+  mentionIds: string[];
   attachments: InboundAttachment[];
   imageUrls: string[];
   localFiles: string[];
@@ -1158,12 +1164,6 @@ function buildMentionRegexes(cfg: OpenClawConfig, agentId?: string): RegExp[] {
     }
     return new RegExp(escaped, "u");
   });
-}
-
-function matchesMentionPatterns(text: string, patterns: RegExp[]): boolean {
-  if (patterns.length === 0) return false;
-  const candidate = typeof text === "string" ? text : "";
-  return patterns.some((pattern) => pattern.test(candidate));
 }
 
 function hasOwn(obj: Record<string, unknown>, key: string): boolean {
@@ -3281,6 +3281,7 @@ function mergeInboundEvents(events: InboundEvent[]): InboundEvent {
     originalText: mergeInboundTextSegments(ordered.map((event) => event.originalText)),
     timestamp: last.timestamp,
     sourceMessageIds: mergeInboundStringArrays(ordered.map((event) => event.sourceMessageIds)),
+    mentionIds: mergeInboundStringArrays(ordered.map((event) => event.mentionIds)),
     attachments: ordered.flatMap((event) => event.attachments),
     imageUrls: [],
     localFiles: [],
@@ -4228,6 +4229,7 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
 
   const attachments = extractInboundAttachments(raw, messageId, account);
   const imageUrls = attachments.map((attachment) => attachment.url).filter(Boolean) as string[];
+  const mentionIds = extractVoceChatMentionIds(raw);
 
   const originalText = firstNonEmptyString([
     detail.content,
@@ -4333,6 +4335,7 @@ function parseInboundEvent(raw: unknown, account: ResolvedAccount): InboundEvent
     timestamp,
     replyTarget,
     sourceMessageIds: [messageId],
+    mentionIds,
     attachments,
     imageUrls,
     localFiles: [],
@@ -4377,12 +4380,12 @@ function resolveAckReactionScope(cfg: OpenClawConfig): "group-mentions" | "group
 function shouldSendAckReaction(
   scope: "group-mentions" | "group-all" | "direct" | "all",
   event: InboundEvent,
-  wasMentioned: boolean,
+  wasAddressed: boolean,
 ): boolean {
   if (scope === "all") return true;
   if (scope === "direct") return event.chatType === "direct";
   if (scope === "group-all") return event.chatType === "group";
-  if (scope === "group-mentions") return event.chatType === "group" && wasMentioned;
+  if (scope === "group-mentions") return event.chatType === "group" && wasAddressed;
   return false;
 }
 
@@ -5170,28 +5173,28 @@ async function processInboundEvent(params: {
     );
     return;
   }
-  const requireMention = event.chatType === "group" ? groupConfig?.requireMention !== false : false;
-  const mentionRegexes = requireMention ? buildMentionRegexes(cfg, route.agentId) : [];
-  const canDetectMention = !requireMention || mentionRegexes.length > 0;
-  const wasMentioned = event.chatType !== "group" || !requireMention
-    ? true
-    : matchesMentionPatterns(event.originalText || event.text, mentionRegexes);
-  if (event.chatType === "group" && requireMention && !canDetectMention) {
-    logger?.warn?.(
-      `[vocechat] skip group event: no mention patterns available account=${account.accountId} group=${event.groupId ?? event.conversationId} agent=${route.agentId}`,
-    );
-    return;
-  }
-  if (event.chatType === "group" && requireMention && !wasMentioned) {
+  const groupReplyTrigger = event.chatType === "group"
+    ? evaluateVoceChatGroupReplyTrigger({
+      text: event.originalText || event.text,
+      mentionRegexes: buildMentionRegexes(cfg, route.agentId),
+      mentionIds: event.mentionIds,
+      botUid: parseVoceChatBotUidFromApiKey(account.apiKey),
+    })
+    : undefined;
+  const wasAddressed = event.chatType !== "group" || Boolean(groupReplyTrigger?.shouldReply);
+  const wasMentioned = event.chatType === "group"
+    ? groupReplyTrigger?.reason === "text-mention" || groupReplyTrigger?.reason === "native-mention"
+    : true;
+  if (event.chatType === "group" && !groupReplyTrigger?.shouldReply) {
     logger?.info?.(
-      `[vocechat] skip group event: no mention account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+      `[vocechat] skip group event: no reply trigger account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
     );
     return;
   }
 
   const ackReaction = resolveAckReaction(cfg, account.accountId);
   const ackReactionScope = resolveAckReactionScope(cfg);
-  if (ackReaction && shouldSendAckReaction(ackReactionScope, event, wasMentioned)) {
+  if (ackReaction && shouldSendAckReaction(ackReactionScope, event, wasAddressed)) {
     try {
       await sendVoceChatReaction({
         cfg,
@@ -5298,6 +5301,8 @@ async function processInboundEvent(params: {
     ConversationLabel: conversationLabel,
     GroupSubject: event.chatType === "group" ? `group:${event.groupId ?? event.conversationId}` : undefined,
     WasMentioned: event.chatType === "group" ? wasMentioned : undefined,
+    WasAddressed: event.chatType === "group" ? wasAddressed : undefined,
+    GroupReplyTrigger: event.chatType === "group" ? groupReplyTrigger?.reason : undefined,
     SenderId: event.fromUid,
     Provider: CHANNEL_ID,
     Surface: CHANNEL_ID,
