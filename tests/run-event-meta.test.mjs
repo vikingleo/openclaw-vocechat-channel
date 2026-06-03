@@ -84,9 +84,10 @@ test("dispatch hook message types map to stable compatibility fields", () => {
   });
 });
 
-test("dispatch bridge suppresses developer execution events for chat channels", async () => {
+test("dispatch bridge suppresses developer execution events for group chat", async () => {
   const delivered = [];
   const bridge = createVoceChatDispatchRunEventBridge({
+    chatType: "group",
     runId: "run-1",
     queueKey: "queue:user:7",
     queueItemId: "run-1",
@@ -109,10 +110,33 @@ test("dispatch bridge suppresses developer execution events for chat channels", 
   assert.deepEqual(delivered, []);
 });
 
-test("reasoning stream is not forwarded to chat", async () => {
+test("dispatch bridge emits developer execution events for direct chat", async () => {
   const delivered = [];
   const bridge = createVoceChatDispatchRunEventBridge({
     runId: "run-2",
+    chatType: "direct",
+    deliver: async (text) => {
+      delivered.push(text);
+    },
+  });
+
+  assert.equal(bridge.replyOptions.suppressDefaultToolProgressMessages, true);
+  bridge.replyOptions.onToolStart({ toolName: "exec_command", preview: "npm test" });
+  bridge.replyOptions.onToolResult({ toolName: "exec_command", ok: true, output: "pass" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(delivered.length, 2);
+  assert.match(delivered[0], /"messageType":"tool_call"/);
+  assert.match(delivered[0], /工具：exec_command/);
+  assert.match(delivered[1], /"messageType":"tool_result"/);
+  assert.match(delivered[1], /pass/);
+});
+
+test("direct chat reasoning stream emits status without raw reasoning text", async () => {
+  const delivered = [];
+  const bridge = createVoceChatDispatchRunEventBridge({
+    runId: "run-3",
+    chatType: "direct",
     deliver: async (text) => {
       delivered.push(text);
     },
@@ -124,5 +148,8 @@ test("reasoning stream is not forwarded to chat", async () => {
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(delivered, []);
+  assert.equal(delivered.length, 1);
+  assert.match(delivered[0], /"messageType":"reasoning"/);
+  assert.match(delivered[0], /推理过程更新：delta/);
+  assert.doesNotMatch(delivered[0], /RAW INTERNAL REASONING SHOULD NOT LEAK/);
 });

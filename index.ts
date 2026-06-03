@@ -32,6 +32,7 @@ import type {
 
 import { ControlPanelStore } from "./src/panel-store.js";
 import { createVoceChatDispatchRunEventBridge } from "./src/dispatch-run-events.js";
+import { buildVoceChatReplyOptions } from "./src/reply-options.js";
 import { buildHiddenRunEventMarkdown, type VoceChatRunEventMeta } from "./src/run-event-meta.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 import {
@@ -5407,6 +5408,7 @@ async function processInboundEvent(params: {
   });
   const dispatchRunEvents = createVoceChatDispatchRunEventBridge({
     runId: queueItem?.queueItemId ?? event.messageId,
+    chatType: event.chatType,
     queueKey: queueItem?.queueKey,
     queueItemId: queueItem?.queueItemId,
     logger,
@@ -5445,8 +5447,11 @@ async function processInboundEvent(params: {
         },
       },
       replyOptions: {
-        onModelSelected,
-        ...dispatchRunEvents.replyOptions,
+        ...buildVoceChatReplyOptions({
+          chatType: event.chatType,
+          onModelSelected,
+          runEventReplyOptions: dispatchRunEvents.replyOptions,
+        }),
       },
     });
   } catch (err) {
