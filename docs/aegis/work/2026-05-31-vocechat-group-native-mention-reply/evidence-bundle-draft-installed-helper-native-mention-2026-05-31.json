@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "installed-helper-native-mention-2026-05-31",
+  "type": "command",
+  "source": "node import from installed extension dist/src/vocechat-mentions.js",
+  "summary": "Installed extension helper parsed bot uid 2 from a synthetic VoceChat apiKey and extracted mentionIds ['2'] from a native mention payload, producing nativeMentioned true.",
+  "verifier": "node --input-type=module runtime check on 2026-05-31; exit code 0."
+}

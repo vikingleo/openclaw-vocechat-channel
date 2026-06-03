@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-31-vocechat-group-native-mention-reply",
+  "lastCheckpointRef": "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/todo-checkpoint-draft.json",
+  "resumeInstruction": "Resume by checking npm test, installed extension dist/src/vocechat-mentions.js, and openclaw-gateway.service status before making completion claims.",
+  "knownPartialWork": [
+    "Added VoceChat native mention helper for extracting detail.properties.mentions and parsing bot uid from apiKey.",
+    "Updated inbound event parsing/merging and group mention gate to accept native mention of the bot uid while preserving text mention patterns.",
+    "Added focused regression tests and reran full npm test.",
+    "Synced extension to /home/vkleo/.openclaw/extensions/vocechat and restarted openclaw-gateway.service."
+  ],
+  "mustReadBeforeContinuing": [
+    "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/10-intent.md",
+    "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/20-checkpoint.md",
+    "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/todo-checkpoint-draft.json"
+  ],
+  "unsafeToAssume": [
+    "Do not assume live group reply was manually exercised unless a fresh group message is sent after this checkpoint."
+  ]
+}

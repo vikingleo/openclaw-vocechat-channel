@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "runtime-installed-extension-2026-05-31",
+  "type": "command",
+  "source": "installed extension dist and gateway status",
+  "summary": "Verified /home/vkleo/.openclaw/extensions/vocechat/dist/src/vocechat-mentions.js exists and openclaw-gateway.service is active after restart; journal shows VoceChat webhook route and approval gateway connected.",
+  "verifier": "systemctl --user and journalctl checks on 2026-05-31; exit code 0."
+}

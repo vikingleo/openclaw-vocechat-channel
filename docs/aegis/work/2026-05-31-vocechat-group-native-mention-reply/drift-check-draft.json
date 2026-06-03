@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-31-vocechat-group-native-mention-reply",
+  "taskIntentRef": "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/task-intent-draft.json",
+  "baselineRefs": [
+    "index.ts group requireMention branch",
+    "tests/vocechat-mentions.test.mjs"
+  ],
+  "scopeStatus": "Inside requested VoceChat group reply scope: only native mention detection, inbound event mentionIds propagation, tests, and Aegis record changed.",
+  "compatStatus": "Existing text alias mention path remains active; native mention metadata is accepted as an additional signal only when requireMention applies.",
+  "retirementStatus": "Old text-only detection remains as compatibility path; no fallback retired yet because alias mentions still support non-native text triggers.",
+  "newRiskSignals": [
+    "No live post-fix group message was sent in VoceChat during final verification; coverage is unit/runtime-helper/service-status level."
+  ],
+  "decision": "continue"
+}

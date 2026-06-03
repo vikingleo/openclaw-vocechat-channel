@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "Group messages that mention the VoceChat bot through native mention metadata should be accepted as mentioned and replied to.",
+  "scope": "Patch VoceChat channel mention detection and add focused regression tests.",
+  "changeKinds": [
+    "bugfix"
+  ],
+  "riskHints": []
+}

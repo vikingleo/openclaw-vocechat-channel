@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "npm-test-2026-05-31",
+  "type": "command",
+  "source": "npm test",
+  "summary": "Build succeeded and node --test passed 12/12 tests, including parseVoceChatBotUidFromApiKey, extractVoceChatMentionIds, and mentionsVoceChatBotUid native mention regression tests.",
+  "verifier": "Codex run on 2026-05-31 in project root; exit code 0."
+}

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "index.ts group requireMention branch",
+    "tests/vocechat-mentions.test.mjs"
+  ],
+  "impactStatement": "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/impact-statement-draft.json",
+  "compatPlan": "Existing text alias mention patterns must continue to work.",
+  "retirementPlan": "Old text-only detection remains as compatibility path; no fallback retired yet because alias mentions still support non-native text triggers.",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/evidence-bundle-draft-installed-helper-native-mention-2026-05-31.json",
+    "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/evidence-bundle-draft-npm-test-2026-05-31.json",
+    "docs/aegis/work/2026-05-31-vocechat-group-native-mention-reply/evidence-bundle-draft-runtime-installed-extension-2026-05-31.json"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-05-31-vocechat-group-native-mention-reply",
+  "currentTodo": "Group native mention detection fix implemented, synced to installed extension, and under final verification.",
+  "completedTodos": [
+    "Added VoceChat native mention helper for extracting detail.properties.mentions and parsing bot uid from apiKey.",
+    "Updated inbound event parsing/merging and group mention gate to accept native mention of the bot uid while preserving text mention patterns.",
+    "Added focused regression tests and reran full npm test.",
+    "Synced extension to /home/vkleo/.openclaw/extensions/vocechat and restarted openclaw-gateway.service."
+  ],
+  "activeSlice": "completion verification",
+  "evidenceRefs": [
+    "npm test: 12/12 pass",
+    "systemctl --user is-active openclaw-gateway.service: active",
+    "journalctl since 23:10: vocechat webhook route registered after restart"
+  ],
+  "blockedOn": null,
+  "nextStep": "Bundle/check Aegis workspace and report final status.",
+  "updatedAt": "2026-05-31"
+}

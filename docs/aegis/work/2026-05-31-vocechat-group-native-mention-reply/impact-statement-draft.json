@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [
+    "channel"
+  ],
+  "owners": [
+    "index.ts"
+  ],
+  "invariants": [],
+  "compatBoundary": "Existing text alias mention patterns must continue to work.",
+  "nonGoals": [
+    "Change requireMention policy or make all group messages auto-reply."
+  ]
+}
