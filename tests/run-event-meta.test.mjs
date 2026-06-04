@@ -110,7 +110,7 @@ test("dispatch bridge suppresses developer execution events for group chat", asy
   assert.deepEqual(delivered, []);
 });
 
-test("dispatch bridge emits developer execution events for direct chat", async () => {
+test("dispatch bridge suppresses execution events for direct chat", async () => {
   const delivered = [];
   const bridge = createVoceChatDispatchRunEventBridge({
     runId: "run-2",
@@ -123,33 +123,19 @@ test("dispatch bridge emits developer execution events for direct chat", async (
   assert.equal(bridge.replyOptions.suppressDefaultToolProgressMessages, true);
   bridge.replyOptions.onToolStart({ toolName: "exec_command", preview: "npm test" });
   bridge.replyOptions.onToolResult({ toolName: "exec_command", ok: true, output: "pass" });
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(delivered.length, 2);
-  assert.match(delivered[0], /"messageType":"tool_call"/);
-  assert.match(delivered[0], /工具：exec_command/);
-  assert.match(delivered[1], /"messageType":"tool_result"/);
-  assert.match(delivered[1], /pass/);
-});
-
-test("direct chat reasoning stream emits status without raw reasoning text", async () => {
-  const delivered = [];
-  const bridge = createVoceChatDispatchRunEventBridge({
-    runId: "run-3",
-    chatType: "direct",
-    deliver: async (text) => {
-      delivered.push(text);
-    },
-  });
-
+  bridge.replyOptions.onCommandOutput({ command: "npm test", exitCode: 0, output: "pass" });
+  bridge.replyOptions.onPatchSummary({ summary: "changed index.ts" });
+  bridge.replyOptions.onPlanUpdate({ summary: "running tests" });
+  bridge.replyOptions.onApprovalEvent({ approvalId: "approval-1", decision: "approved", summary: "approved" });
+  bridge.replyOptions.onItemEvent({ type: "step", summary: "read file" });
+  bridge.replyOptions.onPartialReply({ text: "first generated chunk" });
+  bridge.replyOptions.onPartialReply({ text: "second generated chunk" });
   bridge.replyOptions.onReasoningStream({
     status: "delta",
     text: "RAW INTERNAL REASONING SHOULD NOT LEAK",
   });
+  bridge.replyOptions.onBlockReplyQueued({ type: "text", summary: "queued" });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(delivered.length, 1);
-  assert.match(delivered[0], /"messageType":"reasoning"/);
-  assert.match(delivered[0], /推理过程更新：delta/);
-  assert.doesNotMatch(delivered[0], /RAW INTERNAL REASONING SHOULD NOT LEAK/);
+  assert.deepEqual(delivered, []);
 });
