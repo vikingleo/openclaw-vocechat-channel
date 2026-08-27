@@ -30,6 +30,10 @@ declare module "openclaw/plugin-sdk/channel-reply-pipeline" {
   export const createReplyPrefixOptions: any;
 }
 
+declare module "openclaw/plugin-sdk/agent-media-payload" {
+  export const getAgentScopedMediaLocalRoots: any;
+}
+
 declare module "openclaw/plugin-sdk/outbound-media" {
   export const loadOutboundMediaFromUrl: any;
 }
