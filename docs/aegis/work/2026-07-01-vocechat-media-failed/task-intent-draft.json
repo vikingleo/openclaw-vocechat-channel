@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "VoceChat attachments display and download correctly in the client",
+  "scope": "Diagnose and fix attachment display/download failure for OpenClaw VoceChat channel; keep provider config changes intact",
+  "changeKinds": [
+    "bugfix"
+  ],
+  "riskHints": []
+}
