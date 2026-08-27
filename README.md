@@ -128,6 +128,28 @@
 
 把插件配置写到宿主配置中的 `channels.vocechat`：
 
+### 查看示例
+
+**方式 1：查看完整示例文件**
+
+仓库内提供了可直接参考的完整示例：
+
+```bash
+cat config/plugin-config.example.json5
+```
+
+**方式 2：从示例文件开始配置**
+
+```bash
+# 查看 ~/.openclaw/openclaw.json 现有配置
+cat ~/.openclaw/openclaw.json
+
+# 编辑配置，参考 config/plugin-config.example.json5 中的结构
+openclaw config edit
+```
+
+### 最小配置示例
+
 ```json5
 {
   channels: {
@@ -153,7 +175,17 @@
 }
 ```
 
-完整示例见：`config/plugin-config.example.json5`
+### 示例文件说明
+
+`config/plugin-config.example.json5` 是完整的配置示例，包含：
+
+- 所有通道配置项（`enabled`、`baseUrl`、`apiKey` 等）
+- 群聊触发器配置（含门禁机制说明）
+- 三种实际场景的完整示例（客服群、严格模式群、灵活模式群）
+- 队列控制、管理面板、审批转发等其他配置
+- 每个配置项的中文注释
+
+直接复制需要的配置片段到你的 `~/.openclaw/openclaw.json` 即可。
 
 ## 一键安装与卸载
 
@@ -637,6 +669,259 @@ sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/re
   - 管理员发送者白名单
 - `management.panelStateFile`
   - Telegram 面板状态存储文件
+- `groups`
+  - 群聊配置（支持按群组单独配置触发器）
+
+## 群聊触发器配置
+
+插件支持灵活配置群聊消息触发机器人回复的条件，提供四种触发方式。
+
+### 门禁优先级
+
+**重要**：群聊回复遵循两层门禁机制：
+
+```
+第一层：OpenClaw 主程序原生配置（首要门禁）
+  ↓ 通过后
+第二层：插件触发器配置（细化控制）
+```
+
+#### 第一层门禁：OpenClaw 主程序配置
+
+以下 OpenClaw 原生配置作为首要条件，必须先满足：
+
+1. **`requireMention`**（最高优先级）
+   - 如果主程序设置 `requireMention: true`，则**必须原生 @ 机器人**才能触发
+   - 此时插件的所有其他触发器（文本匹配、问句等）都会被忽略
+   - 只有主程序未设置或设置为 `false` 时，才进入插件的触发器评估
+
+2. **`groupPolicy`**
+   - 主程序的群组策略设置
+
+3. **`groupAllowFrom`**
+   - 主程序的群聊发送者白名单
+
+**配置位置**：
+```json5
+{
+  "channels": {
+    "vocechat": {
+      "groups": {
+        "12345": {
+          "enabled": true,
+          "requireMention": false,  // ← OpenClaw 主程序原生配置（第一层门禁）
+          "triggers": {             // ← 插件触发器配置（第二层门禁）
+            "nativeMention": true,
+            "textMention": true,
+            // ...
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+#### 第二层门禁：插件触发器配置
+
+只有在通过第一层门禁后，才会评估插件的触发器配置：
+
+### 触发方式
+
+1. **原生 @ 机器人**（`nativeMention`）
+   - 用户在群聊中通过 VoceChat 原生 @ 功能提及机器人
+   - 默认：`true`
+
+2. **文本名称匹配**（`textMention`）
+   - 消息中包含机器人名称、昵称或自定义关键词
+   - 支持配置 `mentionPatterns` 自定义匹配模式
+   - 默认：`true`
+
+3. **问句自动触发**（`questionAuto`）
+   - 自动识别疑问句（包含 `?`、`？`、`吗`、`呢` 等）
+   - 默认：`true`
+
+4. **回复机器人消息**（`replyToBot`）
+   - 用户回复/引用机器人的消息时触发（实验性功能）
+   - 需要 VoceChat webhook 支持 `reply_to` 字段
+   - 默认：`false`
+
+### JSON 配置示例
+
+**配置位置**：`~/.openclaw/openclaw.json`
+
+**使用方式**：
+
+```bash
+# 方式 1：从示例文件复制配置片段
+# 查看完整示例
+cat config/plugin-config.example.json5
+
+# 复制需要的配置到 ~/.openclaw/openclaw.json
+vim ~/.openclaw/openclaw.json
+
+# 方式 2：使用 openclaw CLI 编辑（推荐）
+openclaw config edit
+```
+
+**配置示例**：
+
+```json5
+{
+  "channels": {
+    "vocechat": {
+      "groups": {
+        // 默认配置（适用于所有未单独配置的群）
+        "*": {
+          "triggers": {
+            "nativeMention": true,      // 启用 @ 触发
+            "textMention": true,        // 启用文本匹配
+            "questionAuto": false,      // 关闭问句自动触发
+            "replyToBot": false,        // 关闭回复触发
+            "mentionPatterns": ["小助手", "AI", "机器人"],  // 自定义匹配词
+            "mentionPatternsMode": "append"  // append: 追加到系统默认 | replace: 替换系统默认
+          }
+        },
+        
+        // 特定群聊配置（群 ID: 12345）
+        "12345": {
+          "triggers": {
+            "nativeMention": true,
+            "textMention": false,
+            "questionAuto": false,
+            "replyToBot": true,
+            "mentionPatterns": ["客服", "帮助"],
+            "mentionPatternsMode": "replace"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**完整配置示例**：参考 `config/plugin-config.example.json5`，包含：
+- 门禁机制详细说明
+- 三种实际场景的完整配置
+- 所有配置项的中文注释
+
+### 环境变量配置
+
+插件支持通过 `.env` 文件配置群聊触发器，环境变量优先级高于 JSON 配置。
+
+**配置文件**：
+```bash
+# 复制示例文件
+cp .env.example .env
+
+# 编辑配置
+vim .env
+```
+
+**默认配置（适用于所有群）**：
+```bash
+VOCECHAT_GROUP_DEFAULT_NATIVE_MENTION=true
+VOCECHAT_GROUP_DEFAULT_TEXT_MENTION=true
+VOCECHAT_GROUP_DEFAULT_QUESTION_AUTO=false
+VOCECHAT_GROUP_DEFAULT_REPLY_TO_BOT=false
+VOCECHAT_GROUP_DEFAULT_MENTION_PATTERNS=小助手,AI,机器人
+VOCECHAT_GROUP_DEFAULT_MENTION_PATTERNS_MODE=append
+```
+
+**特定群组配置**：
+```bash
+# 群组 12345 的配置
+VOCECHAT_GROUP_12345_NATIVE_MENTION=true
+VOCECHAT_GROUP_12345_TEXT_MENTION=false
+VOCECHAT_GROUP_12345_QUESTION_AUTO=false
+VOCECHAT_GROUP_12345_MENTION_PATTERNS=客服,帮助
+```
+
+**全局简化配置**：
+```bash
+# 适用于所有群组的全局配置
+VOCECHAT_TRIGGER_NATIVE_MENTION=true
+VOCECHAT_TRIGGER_TEXT_MENTION=true
+VOCECHAT_TRIGGER_QUESTION_AUTO=false
+VOCECHAT_MENTION_PATTERNS=小助手,AI
+```
+
+### 配置优先级
+
+```
+环境变量（群组特定） > 环境变量（默认） > 环境变量（全局） > JSON 配置 > 代码默认值
+```
+
+具体规则：
+1. `VOCECHAT_GROUP_{群组ID}_*` 优先级最高
+2. 如果没有，使用 `VOCECHAT_GROUP_DEFAULT_*`
+3. 如果还没有，使用 `VOCECHAT_TRIGGER_*` 或 `VOCECHAT_MENTION_PATTERNS`
+4. 如果还没有，使用 JSON 配置中的 `groups[群组ID]` 或 `groups["*"]`
+5. 最后使用代码默认值
+
+### 常见场景配置
+
+**场景 1：严格模式（只响应明确 @）**
+```bash
+VOCECHAT_GROUP_DEFAULT_NATIVE_MENTION=true
+VOCECHAT_GROUP_DEFAULT_TEXT_MENTION=false
+VOCECHAT_GROUP_DEFAULT_QUESTION_AUTO=false
+VOCECHAT_GROUP_DEFAULT_REPLY_TO_BOT=false
+```
+
+**场景 2：主动模式（响应所有疑问）**
+```bash
+VOCECHAT_GROUP_DEFAULT_NATIVE_MENTION=true
+VOCECHAT_GROUP_DEFAULT_TEXT_MENTION=true
+VOCECHAT_GROUP_DEFAULT_QUESTION_AUTO=true
+VOCECHAT_GROUP_DEFAULT_REPLY_TO_BOT=true
+```
+
+**场景 3：客服模式（多种触发 + 自定义关键词）**
+```bash
+VOCECHAT_GROUP_DEFAULT_NATIVE_MENTION=true
+VOCECHAT_GROUP_DEFAULT_TEXT_MENTION=true
+VOCECHAT_GROUP_DEFAULT_QUESTION_AUTO=false
+VOCECHAT_GROUP_DEFAULT_REPLY_TO_BOT=true
+VOCECHAT_GROUP_DEFAULT_MENTION_PATTERNS=客服,帮助,咨询,报修
+VOCECHAT_GROUP_DEFAULT_MENTION_PATTERNS_MODE=append
+```
+
+**场景 4：混合模式（不同群组不同策略）**
+```bash
+# 默认：只响应 @
+VOCECHAT_GROUP_DEFAULT_NATIVE_MENTION=true
+VOCECHAT_GROUP_DEFAULT_TEXT_MENTION=false
+
+# 客服群（12345）：全面响应
+VOCECHAT_GROUP_12345_NATIVE_MENTION=true
+VOCECHAT_GROUP_12345_TEXT_MENTION=true
+VOCECHAT_GROUP_12345_QUESTION_AUTO=true
+VOCECHAT_GROUP_12345_MENTION_PATTERNS=客服,帮助
+
+# 技术群（67890）：只响应专业关键词
+VOCECHAT_GROUP_67890_NATIVE_MENTION=true
+VOCECHAT_GROUP_67890_TEXT_MENTION=true
+VOCECHAT_GROUP_67890_QUESTION_AUTO=false
+VOCECHAT_GROUP_67890_MENTION_PATTERNS=技术支持,故障,bug
+VOCECHAT_GROUP_67890_MENTION_PATTERNS_MODE=replace
+```
+
+### 调试触发器
+
+如需调试触发器行为，可以查看日志：
+
+```bash
+journalctl --user -u openclaw-gateway.service -f | grep "group trigger"
+```
+
+关键日志标识：
+- `group trigger activated` - 触发器激活
+- `skip group event: no reply trigger` - 未触发（包含原因）
+- `reason=native-mention` - 触发原因为原生 @
+- `reason=text-mention` - 触发原因为文本匹配
+- `reason=question` - 触发原因为疑问句
+- `reason=reply-to-bot` - 触发原因为回复机器人消息
 
 ## 安装方式
 

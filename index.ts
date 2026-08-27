@@ -45,6 +45,7 @@ import {
 import {
   extractVoceChatMentionIds,
   parseVoceChatBotUidFromApiKey,
+  mentionsVoceChatBotUid,
 } from "./src/vocechat-mentions.js";
 import { evaluateVoceChatGroupReplyTrigger } from "./src/vocechat-group-trigger.js";
 
@@ -109,15 +110,26 @@ const IMAGE_TYPE_KEYWORDS = new Set(["image", "img", "photo", "picture", "pic", 
 
 type InboundParseMode = "legacy" | "balanced" | "strict";
 
+type VoceChatGroupTriggerConfig = {
+  nativeMention?: boolean;
+  textMention?: boolean;
+  questionAuto?: boolean;
+  replyToBot?: boolean;
+  mentionPatterns?: string[];
+  mentionPatternsMode?: "append" | "replace";
+};
+
 type VoceChatGroupConfig = {
   enabled?: boolean;
   allow?: boolean;
   requireMention?: boolean;
+  triggers?: VoceChatGroupTriggerConfig;
 };
 
 type ResolvedVoceChatGroupConfig = {
   enabled?: boolean;
   requireMention?: boolean;
+  triggers: VoceChatGroupTriggerConfig;
 };
 
 type VoceChatBubbleStyle = "plain" | "callout" | "badge" | "compact";
@@ -1783,12 +1795,113 @@ function parseVoceChatBubbleStyleMap(entries: Record<string, unknown>[]): Record
   return result;
 }
 
+function parseGroupTriggerConfigFromEnv(groupId?: string): VoceChatGroupTriggerConfig | null {
+  const normalizedGroupId = normalizeString(groupId);
+  const prefix = normalizedGroupId ? `VOCECHAT_GROUP_${normalizedGroupId}_` : "VOCECHAT_GROUP_DEFAULT_";
+
+  const nativeMention = process.env[`${prefix}NATIVE_MENTION`];
+  const textMention = process.env[`${prefix}TEXT_MENTION`];
+  const questionAuto = process.env[`${prefix}QUESTION_AUTO`];
+  const replyToBot = process.env[`${prefix}REPLY_TO_BOT`];
+  const mentionPatterns = process.env[`${prefix}MENTION_PATTERNS`];
+  const mentionPatternsMode = process.env[`${prefix}MENTION_PATTERNS_MODE`];
+
+  if (!nativeMention && !textMention && !questionAuto && !replyToBot && !mentionPatterns && !mentionPatternsMode) {
+    return null;
+  }
+
+  const config: VoceChatGroupTriggerConfig = {};
+
+  if (nativeMention !== undefined) {
+    config.nativeMention = parseBoolean(nativeMention, true);
+  }
+  if (textMention !== undefined) {
+    config.textMention = parseBoolean(textMention, true);
+  }
+  if (questionAuto !== undefined) {
+    config.questionAuto = parseBoolean(questionAuto, true);
+  }
+  if (replyToBot !== undefined) {
+    config.replyToBot = parseBoolean(replyToBot, false);
+  }
+  if (mentionPatterns) {
+    config.mentionPatterns = mentionPatterns.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  if (mentionPatternsMode && (mentionPatternsMode === "append" || mentionPatternsMode === "replace")) {
+    config.mentionPatternsMode = mentionPatternsMode;
+  }
+
+  return config;
+}
+
+function parseVoceChatGroupTriggers(value: unknown, groupId?: string): VoceChatGroupTriggerConfig {
+  const record = asRecord(value);
+  const triggers = asRecord(record.triggers);
+
+  const jsonConfig: VoceChatGroupTriggerConfig = {};
+  if (hasOwn(triggers, "nativeMention")) jsonConfig.nativeMention = parseBoolean(triggers.nativeMention, true);
+  if (hasOwn(triggers, "textMention")) jsonConfig.textMention = parseBoolean(triggers.textMention, true);
+  if (hasOwn(triggers, "questionAuto")) jsonConfig.questionAuto = parseBoolean(triggers.questionAuto, true);
+  if (hasOwn(triggers, "replyToBot")) jsonConfig.replyToBot = parseBoolean(triggers.replyToBot, false);
+  if (triggers.mentionPatterns) jsonConfig.mentionPatterns = parseAllowEntries(triggers.mentionPatterns);
+  if (triggers.mentionPatternsMode) {
+    const mode = normalizeString(triggers.mentionPatternsMode);
+    if (mode === "append" || mode === "replace") jsonConfig.mentionPatternsMode = mode;
+  }
+
+  const envConfigSpecific = parseGroupTriggerConfigFromEnv(groupId);
+  const envConfigDefault = groupId ? parseGroupTriggerConfigFromEnv(undefined) : null;
+
+  const globalNativeMention = process.env.VOCECHAT_TRIGGER_NATIVE_MENTION;
+  const globalTextMention = process.env.VOCECHAT_TRIGGER_TEXT_MENTION;
+  const globalQuestionAuto = process.env.VOCECHAT_TRIGGER_QUESTION_AUTO;
+  const globalReplyToBot = process.env.VOCECHAT_TRIGGER_REPLY_TO_BOT;
+  const globalMentionPatterns = process.env.VOCECHAT_MENTION_PATTERNS;
+
+  return {
+    nativeMention:
+      envConfigSpecific?.nativeMention ??
+      envConfigDefault?.nativeMention ??
+      (globalNativeMention !== undefined ? parseBoolean(globalNativeMention, true) : undefined) ??
+      jsonConfig.nativeMention ??
+      true,
+    textMention:
+      envConfigSpecific?.textMention ??
+      envConfigDefault?.textMention ??
+      (globalTextMention !== undefined ? parseBoolean(globalTextMention, true) : undefined) ??
+      jsonConfig.textMention ??
+      true,
+    questionAuto:
+      envConfigSpecific?.questionAuto ??
+      envConfigDefault?.questionAuto ??
+      (globalQuestionAuto !== undefined ? parseBoolean(globalQuestionAuto, true) : undefined) ??
+      jsonConfig.questionAuto ??
+      true,
+    replyToBot:
+      envConfigSpecific?.replyToBot ??
+      envConfigDefault?.replyToBot ??
+      (globalReplyToBot !== undefined ? parseBoolean(globalReplyToBot, false) : undefined) ??
+      jsonConfig.replyToBot ??
+      false,
+    mentionPatterns:
+      envConfigSpecific?.mentionPatterns ??
+      envConfigDefault?.mentionPatterns ??
+      (globalMentionPatterns ? globalMentionPatterns.split(",").map((s) => s.trim()).filter(Boolean) : undefined) ??
+      jsonConfig.mentionPatterns ??
+      [],
+    mentionPatternsMode:
+      envConfigSpecific?.mentionPatternsMode ?? envConfigDefault?.mentionPatternsMode ?? jsonConfig.mentionPatternsMode ?? "append",
+  };
+}
+
 function parseVoceChatGroups(value: unknown): Record<string, ResolvedVoceChatGroupConfig> {
   const groups = asRecord(value);
   const result: Record<string, ResolvedVoceChatGroupConfig> = {};
   for (const [groupId, raw] of Object.entries(groups)) {
     const record = asRecord(raw);
-    const next: ResolvedVoceChatGroupConfig = {};
+    const next: ResolvedVoceChatGroupConfig = {
+      triggers: parseVoceChatGroupTriggers(record, groupId),
+    };
     if (hasOwn(record, "enabled")) next.enabled = parseBoolean(record.enabled, true);
     else if (hasOwn(record, "allow")) next.enabled = parseBoolean(record.allow, true);
     if (hasOwn(record, "requireMention")) next.requireMention = parseBoolean(record.requireMention, true);
@@ -1800,12 +1913,17 @@ function parseVoceChatGroups(value: unknown): Record<string, ResolvedVoceChatGro
 function resolveVoceChatGroupConfig(
   account: ResolvedAccount,
   groupId?: string,
-): ResolvedVoceChatGroupConfig | undefined {
+): ResolvedVoceChatGroupConfig {
   const normalizedGroupId = normalizeString(groupId);
   if (normalizedGroupId && hasOwn(account.groups, normalizedGroupId)) {
     return account.groups[normalizedGroupId];
   }
-  return account.groups["*"];
+  if (account.groups["*"]) {
+    return account.groups["*"];
+  }
+  return {
+    triggers: parseVoceChatGroupTriggers({}, normalizedGroupId),
+  };
 }
 
 function resolveVoceChatManagement(cfg: OpenClawConfig): VoceChatManagementConfig {
@@ -5167,30 +5285,80 @@ async function processInboundEvent(params: {
       id: event.conversationId,
     },
   });
+
+  // 第一层门禁：OpenClaw 主程序原生群聊配置
+  // 这是首要条件，必须先通过主程序的 groupPolicy、requireMention 等设置
   const groupConfig = event.chatType === "group" ? resolveVoceChatGroupConfig(account, event.groupId) : undefined;
+
   if (event.chatType === "group" && groupConfig?.enabled === false) {
     logger?.info?.(
-      `[vocechat] skip group event: group disabled account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+      `[vocechat] skip group event: group disabled by plugin config account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
     );
     return;
   }
+
+  // 检查 OpenClaw 主程序的 requireMention 设置（优先级最高）
+  // 如果主程序要求 mention 但消息未 mention，直接拒绝
+  const botUid = parseVoceChatBotUidFromApiKey(account.apiKey);
+  const hasNativeMention = mentionsVoceChatBotUid(event.mentionIds ?? [], botUid);
+
+  if (event.chatType === "group" && groupConfig?.requireMention === true && !hasNativeMention) {
+    logger?.info?.(
+      `[vocechat] skip group event: OpenClaw requireMention not satisfied account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+    );
+    return;
+  }
+
+  // 第二层门禁：插件触发器配置
+  // 只有在主程序允许的情况下，才进入插件的触发器评估
+  const mentionRegexes = buildMentionRegexes(cfg, route.agentId);
+  const customPatterns = groupConfig?.triggers?.mentionPatterns ?? [];
+  const patternsMode = groupConfig?.triggers?.mentionPatternsMode ?? "append";
+  const finalMentionRegexes = patternsMode === "replace" && customPatterns.length > 0
+    ? customPatterns.map((pattern) => {
+        const escaped = escapeRegExp(pattern);
+        if (/^[A-Za-z0-9_.:-]+$/.test(pattern)) {
+          return new RegExp(`(^|[^\\p{L}\\p{N}_])@?${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu");
+        }
+        return new RegExp(escaped, "u");
+      })
+    : [
+        ...mentionRegexes,
+        ...customPatterns.map((pattern) => {
+          const escaped = escapeRegExp(pattern);
+          if (/^[A-Za-z0-9_.:-]+$/.test(pattern)) {
+            return new RegExp(`(^|[^\\p{L}\\p{N}_])@?${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu");
+          }
+          return new RegExp(escaped, "u");
+        }),
+      ];
+
   const groupReplyTrigger = event.chatType === "group"
     ? evaluateVoceChatGroupReplyTrigger({
       text: event.originalText || event.text,
-      mentionRegexes: buildMentionRegexes(cfg, route.agentId),
+      mentionRegexes: finalMentionRegexes,
       mentionIds: event.mentionIds,
-      botUid: parseVoceChatBotUidFromApiKey(account.apiKey),
+      botUid: botUid,
+      triggerConfig: groupConfig?.triggers,
     })
     : undefined;
+
   const wasAddressed = event.chatType !== "group" || Boolean(groupReplyTrigger?.shouldReply);
   const wasMentioned = event.chatType === "group"
     ? groupReplyTrigger?.reason === "text-mention" || groupReplyTrigger?.reason === "native-mention"
     : true;
+
   if (event.chatType === "group" && !groupReplyTrigger?.shouldReply) {
     logger?.info?.(
-      `[vocechat] skip group event: no reply trigger account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+      `[vocechat] skip group event: plugin trigger not satisfied account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId} reason=${groupReplyTrigger?.reason ?? "none"}`,
     );
     return;
+  }
+
+  if (event.chatType === "group" && groupReplyTrigger?.shouldReply) {
+    logger?.info?.(
+      `[vocechat] group trigger activated account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId} reason=${groupReplyTrigger.reason}`,
+    );
   }
 
   const ackReaction = resolveAckReaction(cfg, account.accountId);

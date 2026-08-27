@@ -16,6 +16,105 @@
       webhookApiKey: "<WEBHOOK_API_KEY>",
       allowFrom: ["10001"],
       groupAllowFrom: ["10001"],
+
+      // ============================================================
+      // 群聊触发器配置
+      // ============================================================
+      //
+      // 重要：群聊回复遵循两层门禁机制
+      //
+      // 第一层门禁：OpenClaw 主程序原生配置（首要条件）
+      //   - requireMention: 如果设置为 true，必须原生 @ 机器人才能触发
+      //   - enabled: 群组是否启用
+      //
+      // 第二层门禁：插件触发器配置（细化控制）
+      //   - nativeMention: 原生 @ 触发
+      //   - textMention: 文本名称匹配触发
+      //   - questionAuto: 问句自动触发
+      //   - replyToBot: 回复机器人消息触发
+      //
+      // 注意：只有在主程序允许的情况下，才会评估插件触发器配置
+      // ============================================================
+
+      groups: {
+        // 默认配置（适用于所有未单独配置的群）
+        "*": {
+          enabled: true,              // 第一层门禁：群组启用状态
+          requireMention: false,      // 第一层门禁：是否要求必须 @ 机器人（优先级最高）
+
+          triggers: {                 // 第二层门禁：插件触发器配置
+            nativeMention: true,      // 启用 @ 机器人触发
+            textMention: true,        // 启用文本名称匹配触发
+            questionAuto: true,       // 启用问句自动触发
+            replyToBot: false,        // 关闭回复机器人消息触发（实验性）
+            mentionPatterns: [        // 自定义文本匹配模式
+              "小助手",
+              "AI",
+              "机器人"
+            ],
+            mentionPatternsMode: "append"  // append: 追加到系统默认 | replace: 替换系统默认
+          }
+        },
+
+        // 特定群聊配置示例 1：客服群（群 ID: 12345）
+        // 主程序不要求 @，插件启用多种触发器
+        "12345": {
+          enabled: true,
+          requireMention: false,      // 主程序不强制要求 @
+
+          triggers: {
+            nativeMention: true,
+            textMention: true,
+            questionAuto: false,      // 关闭问句自动触发，避免干扰讨论
+            replyToBot: true,
+            mentionPatterns: [
+              "客服",
+              "帮助",
+              "咨询",
+              "报修"
+            ],
+            mentionPatternsMode: "append"
+          }
+        },
+
+        // 特定群聊配置示例 2：严格模式群（群 ID: 67890）
+        // 主程序要求必须 @，插件触发器不生效
+        "67890": {
+          enabled: true,
+          requireMention: true,        // 主程序强制要求 @ 机器人（优先级最高）
+
+          // 注意：当 requireMention=true 时，下面的插件触发器配置会被忽略
+          // 只有原生 @ 才能触发回复
+          triggers: {
+            nativeMention: true,
+            textMention: false,        // 不生效（被主程序 requireMention 覆盖）
+            questionAuto: false,       // 不生效（被主程序 requireMention 覆盖）
+            replyToBot: false
+          }
+        },
+
+        // 特定群聊配置示例 3：灵活模式群（群 ID: 999）
+        // 主程序不要求 @，插件只响应专业关键词
+        "999": {
+          enabled: true,
+          requireMention: false,       // 主程序不强制要求 @
+
+          triggers: {
+            nativeMention: true,
+            textMention: true,
+            questionAuto: false,
+            replyToBot: true,
+            mentionPatterns: [
+              "技术支持",
+              "故障",
+              "bug",
+              "问题"
+            ],
+            mentionPatternsMode: "replace"  // 只使用自定义模式，不使用系统默认
+          }
+        }
+      },
+
       queueControl: {
         enabled: true,
         token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>",

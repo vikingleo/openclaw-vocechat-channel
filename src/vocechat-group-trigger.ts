@@ -1,10 +1,17 @@
 import { mentionsVoceChatBotUid } from "./vocechat-mentions.js";
 
-export type VoceChatGroupReplyTriggerReason = "none" | "question" | "text-mention" | "native-mention";
+export type VoceChatGroupReplyTriggerReason = "none" | "question" | "text-mention" | "native-mention" | "reply-to-bot";
 
 export type VoceChatGroupReplyTrigger = {
   shouldReply: boolean;
   reason: VoceChatGroupReplyTriggerReason;
+};
+
+export type VoceChatGroupTriggerConfig = {
+  nativeMention?: boolean;
+  textMention?: boolean;
+  questionAuto?: boolean;
+  replyToBot?: boolean;
 };
 
 const CHINESE_QUESTION_HINTS = [
@@ -74,18 +81,31 @@ export function evaluateVoceChatGroupReplyTrigger(params: {
   mentionRegexes?: readonly RegExp[];
   mentionIds?: readonly unknown[];
   botUid?: unknown;
+  replyToMessageId?: string;
+  botMessageHistory?: Set<string>;
+  triggerConfig?: VoceChatGroupTriggerConfig;
 }): VoceChatGroupReplyTrigger {
   const text = normalizeText(params.text);
+  const config = params.triggerConfig ?? {
+    nativeMention: true,
+    textMention: true,
+    questionAuto: true,
+    replyToBot: false,
+  };
 
-  if (matchesTextPatterns(text, params.mentionRegexes ?? [])) {
+  if (config.textMention !== false && matchesTextPatterns(text, params.mentionRegexes ?? [])) {
     return { shouldReply: true, reason: "text-mention" };
   }
 
-  if (mentionsVoceChatBotUid(params.mentionIds ?? [], params.botUid)) {
+  if (config.nativeMention !== false && mentionsVoceChatBotUid(params.mentionIds ?? [], params.botUid)) {
     return { shouldReply: true, reason: "native-mention" };
   }
 
-  if (isLikelyQuestionText(text)) {
+  if (config.replyToBot === true && params.replyToMessageId && params.botMessageHistory?.has(params.replyToMessageId)) {
+    return { shouldReply: true, reason: "reply-to-bot" };
+  }
+
+  if (config.questionAuto !== false && isLikelyQuestionText(text)) {
     return { shouldReply: true, reason: "question" };
   }
 
