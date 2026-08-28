@@ -60,3 +60,12 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/gate-input-pack.json | 2026-06-01-vocechat-group-question-nickname-reply gate input pack |
 | 2026-06-01 | work | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/proof-bundle.md | 2026-06-01-vocechat-group-question-nickname-reply proof bundle |
 | 2026-06-01 | artifact | docs/aegis/work/2026-06-01-vocechat-group-question-nickname-reply/evidence-bundle-draft-runtime-config-open-group-2026-06-01.json | 2026-06-01-vocechat-group-question-nickname-reply evidence runtime-config-open-group-2026-06-01 |
+| 2026-07-01 | work | docs/aegis/work/2026-07-01-vocechat-media-failed/10-intent.md | VoceChat media failed repair intent |
+| 2026-07-01 | work | docs/aegis/work/2026-07-01-vocechat-media-failed/20-checkpoint.md | VoceChat media failed repair checkpoint |
+| 2026-07-01 | work | docs/aegis/work/2026-07-01-vocechat-media-failed/90-evidence.md | VoceChat media failed repair evidence |
+| 2026-07-01 | work | docs/aegis/work/2026-07-01-vocechat-media-failed/99-reflection.md | VoceChat media failed repair reflection |
+| 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/task-intent-draft.json | VoceChat media failed repair task intent draft |
+| 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/baseline-read-set-hint.json | VoceChat media failed repair baseline read-set hint |
+| 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/impact-statement-draft.json | VoceChat media failed repair impact statement draft |
+| 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/todo-checkpoint-draft.json | VoceChat media failed repair todo checkpoint draft |
+| 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/drift-check-draft.json | VoceChat media failed repair drift check draft |

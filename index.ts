@@ -15,6 +15,7 @@ import {
   resolveOutboundMediaUrls,
 } from "openclaw/plugin-sdk/reply-payload";
 import { createReplyPrefixOptions } from "openclaw/plugin-sdk/channel-reply-pipeline";
+import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/agent-media-payload";
 import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
 import { writeJsonFileAtomically } from "openclaw/plugin-sdk/json-store";
 import { registerPluginHttpRoute, WEBHOOK_BODY_READ_DEFAULTS } from "openclaw/plugin-sdk/webhook-ingress";
@@ -33,6 +34,7 @@ import type {
 import { ControlPanelStore } from "./src/panel-store.js";
 import { createVoceChatDispatchRunEventBridge } from "./src/dispatch-run-events.js";
 import { buildVoceChatReplyOptions } from "./src/reply-options.js";
+import { buildVoceChatReplyMediaLocalRoots } from "./src/reply-media-context.js";
 import { buildHiddenRunEventMarkdown, type VoceChatRunEventMeta } from "./src/run-event-meta.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 import {
@@ -5518,6 +5520,12 @@ async function processInboundEvent(params: {
     accountId: account.accountId,
   });
 
+  const replyMediaLocalRoots = buildVoceChatReplyMediaLocalRoots({
+    baseMediaLocalRoots: getAgentScopedMediaLocalRoots(cfg, route.agentId),
+    inboundMediaRootDir: resolveInboundMediaRootDir(),
+    attachments: event.attachments,
+  });
+
   const deliverReply = createNormalizedOutboundDeliverer(async (payload) => {
     if (!canDeliverForCurrentQueueItem()) {
       logger?.warn?.(
@@ -5539,6 +5547,7 @@ async function processInboundEvent(params: {
             to: event.replyTarget,
             text: caption,
             mediaUrl,
+            mediaLocalRoots: replyMediaLocalRoots,
             accountId: account.accountId,
           } as ChannelOutboundContext,
         );
