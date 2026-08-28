@@ -2,7 +2,7 @@
 
 ## 概述
 
-VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenClaw 主程序为准的管理策略得到遵守。
+VoceChat 插件的群聊触发器采用**两层门禁机制**：先执行插件基础门禁，再执行插件触发器细化控制。
 
 ## 两层门禁架构
 
@@ -10,7 +10,7 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 用户消息（群聊）
     ↓
 ┌───────────────────────────────────────────────┐
-│ 第一层门禁：OpenClaw 主程序原生配置         │
+│ 第一层门禁：VoceChat 插件基础配置          │
 │ （首要条件，必须先通过）                      │
 ├───────────────────────────────────────────────┤
 │ 1. requireMention（最高优先级）              │
@@ -26,7 +26,7 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
     ↓ 通过
 ┌───────────────────────────────────────────────┐
 │ 第二层门禁：插件触发器配置                   │
-│ （细化控制，在主程序允许的前提下）           │
+│ （细化控制，在基础门禁允许的前提下）         │
 ├───────────────────────────────────────────────┤
 │ 1. nativeMention: 原生 @ 机器人              │
 │ 2. textMention: 文本名称匹配                 │
@@ -50,7 +50,7 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
     "vocechat": {
       "groups": {
         "12345": {
-          "requireMention": true  // ← OpenClaw 主程序原生配置
+          "requireMention": true  // ← VoceChat 插件基础配置
         }
       }
     }
@@ -73,7 +73,7 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 {
   "groups": {
     "12345": {
-      "requireMention": true,  // ← 主程序要求必须 @
+      "requireMention": true,  // ← 插件基础门禁要求必须 @
       "triggers": {
         "nativeMention": true,
         "textMention": true,   // ✗ 不生效（被 requireMention 覆盖）
@@ -86,16 +86,16 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 
 **日志输出**：
 ```
-[vocechat] skip group event: OpenClaw requireMention not satisfied account=... group=12345 mid=...
+[vocechat] skip group event: plugin requireMention not satisfied account=... group=12345 mid=...
 ```
 
 ### 2. groupPolicy
 
-主程序的群组策略设置，控制群聊的总体行为。
+插件的群组策略设置，控制群聊的总体行为。
 
 ### 3. groupAllowFrom
 
-主程序的群聊发送者白名单，只有在白名单中的用户才能触发机器人。
+插件的群聊发送者白名单，只有在白名单中的用户才能触发机器人。这里填写 VoceChat 原始 UID 字符串，例如 `"1"`，不要写成 `vocechat:user:1`。
 
 ## 第二层门禁详解
 
@@ -104,7 +104,7 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 只有在满足以下条件时，才会评估插件触发器：
 
 1. **第一层门禁已通过**
-2. **主程序未强制要求 @**（`requireMention != true`）
+2. **插件基础门禁未强制要求 @**（`requireMention != true`）
 
 ### 触发器评估顺序
 
@@ -126,12 +126,12 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 
 ### 示例配置
 
-**示例 1：灵活模式（主程序不限制，插件细化控制）**
+**示例 1：灵活模式（基础门禁不限制，触发器细化控制）**
 ```json5
 {
   "groups": {
     "12345": {
-      "requireMention": false,  // ← 主程序不强制要求 @
+      "requireMention": false,  // ← 插件基础门禁不强制要求 @
       "triggers": {
         "nativeMention": true,  // ✓ 生效
         "textMention": true,    // ✓ 生效
@@ -143,7 +143,7 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 }
 ```
 
-**示例 2：客服模式（主程序允许，插件启用多触发器）**
+**示例 2：客服模式（基础门禁允许，触发器启用多种方式）**
 ```json5
 {
   "groups": {
@@ -163,13 +163,13 @@ VoceChat 插件的群聊触发器采用**两层门禁机制**，确保以 OpenCl
 ## 配置优先级总结
 
 ```
-OpenClaw 主程序 requireMention > 插件所有触发器
+插件基础门禁 requireMention > 插件触发器
 ```
 
 **关键点**：
-- 主程序的 `requireMention` 是**最高优先级**
-- 插件触发器只在主程序允许的前提下生效
-- 这种设计确保了管理策略的一致性
+- 插件基础门禁的 `requireMention` 是**最高优先级**
+- 触发器只在基础门禁允许的前提下生效
+- 这种设计确保“谁能触发”和“什么内容触发”分开管理
 
 ## 实际场景
 
@@ -182,7 +182,7 @@ OpenClaw 主程序 requireMention > 插件所有触发器
 {
   "groups": {
     "company-internal": {
-      "requireMention": true  // ← 主程序强制要求 @
+      "requireMention": true  // ← 插件基础门禁强制要求 @
       // 插件触发器配置不需要，因为会被 requireMention 覆盖
     }
   }
@@ -204,7 +204,7 @@ OpenClaw 主程序 requireMention > 插件所有触发器
 {
   "groups": {
     "customer-service": {
-      "requireMention": false,  // ← 主程序不限制
+      "requireMention": false,  // ← 插件基础门禁不限制
       "triggers": {
         "nativeMention": true,
         "textMention": true,
@@ -263,15 +263,15 @@ journalctl --user -u openclaw-gateway.service -f | grep "vocechat"
 
 **第一层门禁**：
 ```
-[vocechat] skip group event: OpenClaw requireMention not satisfied
+[vocechat] skip group event: plugin requireMention not satisfied
 ```
-→ 主程序要求必须 @，但消息未 @
+→ 插件基础门禁要求必须 @，但消息未 @
 
 **第二层门禁**：
 ```
 [vocechat] skip group event: plugin trigger not satisfied ... reason=none
 ```
-→ 主程序已允许，但插件触发器未满足
+→ 插件基础门禁已允许，但触发器未满足
 
 ```
 [vocechat] group trigger activated ... reason=native-mention
@@ -291,7 +291,7 @@ journalctl --user -u openclaw-gateway.service -f | grep "vocechat"
 
 ### Q2: 如何实现"只响应 @"？
 
-**方案 1（推荐）**：使用主程序配置
+**方案 1（推荐）**：使用插件基础配置
 ```json5
 {
   "groups": {
@@ -320,7 +320,7 @@ journalctl --user -u openclaw-gateway.service -f | grep "vocechat"
 ```
 
 **区别**：
-- 方案 1：主程序级别控制，更严格
+- 方案 1：插件基础门禁控制，更严格
 - 方案 2：插件级别控制，更灵活
 
 ### Q3: 如何在不同群使用不同策略？
@@ -349,7 +349,7 @@ journalctl --user -u openclaw-gateway.service -f | grep "vocechat"
 ## 最佳实践
 
 1. **明确管理策略**
-   - 先确定主程序级别的管理策略（`requireMention`）
+   - 先确定插件基础门禁策略（`requireMention`）
    - 再配置插件级别的细化控制（`triggers`）
 
 2. **保持一致性**
@@ -369,10 +369,10 @@ journalctl --user -u openclaw-gateway.service -f | grep "vocechat"
 ### 代码逻辑
 
 ```typescript
-// 第一层门禁：OpenClaw 主程序配置
+// 第一层门禁：VoceChat 插件基础配置
 if (requireMention === true && !hasNativeMention) {
-  // 主程序要求必须 @，但消息未 @
-  logger.info('skip: OpenClaw requireMention not satisfied');
+  // 插件基础门禁要求必须 @，但消息未 @
+  logger.info('skip: plugin requireMention not satisfied');
   return;
 }
 
@@ -426,9 +426,9 @@ function evaluateVoceChatGroupReplyTrigger(params) {
 
 VoceChat 群聊触发器的两层门禁机制确保了：
 
-1. **管理策略优先**：OpenClaw 主程序配置是首要条件
+1. **基础门禁优先**：VoceChat 插件基础配置是首要条件
 2. **灵活细化控制**：插件触发器提供更细粒度的配置
-3. **清晰的优先级**：主程序 > 插件，避免配置冲突
+3. **清晰的优先级**：基础门禁 > 触发器，避免配置冲突
 4. **可观测性**：详细的日志输出便于调试
 
-这种设计既保证了以 OpenClaw 主程序为准的管理策略，又提供了灵活的触发器配置能力。
+这种设计既保证了基础门禁优先，又提供了灵活的触发器配置能力。

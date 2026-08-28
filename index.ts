@@ -5288,8 +5288,8 @@ async function processInboundEvent(params: {
     },
   });
 
-  // 第一层门禁：OpenClaw 主程序原生群聊配置
-  // 这是首要条件，必须先通过主程序的 groupPolicy、requireMention 等设置
+  // 第一层门禁：VoceChat 插件群聊配置
+  // 这是首要条件，必须先通过插件的 enabled、groupAllowFrom、requireMention 等设置
   const groupConfig = event.chatType === "group" ? resolveVoceChatGroupConfig(account, event.groupId) : undefined;
 
   if (event.chatType === "group" && groupConfig?.enabled === false) {
@@ -5299,20 +5299,20 @@ async function processInboundEvent(params: {
     return;
   }
 
-  // 检查 OpenClaw 主程序的 requireMention 设置（优先级最高）
-  // 如果主程序要求 mention 但消息未 mention，直接拒绝
+  // 检查插件的 requireMention 设置（优先级最高）
+  // 如果插件要求 mention 但消息未 mention，直接拒绝
   const botUid = parseVoceChatBotUidFromApiKey(account.apiKey);
   const hasNativeMention = mentionsVoceChatBotUid(event.mentionIds ?? [], botUid);
 
   if (event.chatType === "group" && groupConfig?.requireMention === true && !hasNativeMention) {
     logger?.info?.(
-      `[vocechat] skip group event: OpenClaw requireMention not satisfied account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
+      `[vocechat] skip group event: plugin requireMention not satisfied account=${account.accountId} group=${event.groupId ?? event.conversationId} mid=${event.messageId}`,
     );
     return;
   }
 
   // 第二层门禁：插件触发器配置
-  // 只有在主程序允许的情况下，才进入插件的触发器评估
+  // 只有在插件基础门禁允许的情况下，才进入触发器评估
   const mentionRegexes = buildMentionRegexes(cfg, route.agentId);
   const customPatterns = groupConfig?.triggers?.mentionPatterns ?? [];
   const patternsMode = groupConfig?.triggers?.mentionPatternsMode ?? "append";

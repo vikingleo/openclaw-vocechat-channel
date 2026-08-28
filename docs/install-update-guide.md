@@ -61,11 +61,11 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 | `--base-url` | 是 | VoceChat 服务地址 |
 | `--api-key` | 是 | VoceChat Bot API Key |
 | `--default-to` | 否 | 默认发送目标，如 `user:2` / `group:5` / 纯数字 |
-| `--allow-from` | 否 | 私聊白名单（逗号分隔） |
-| `--group-allow-from` | 否 | 群聊白名单（逗号分隔） |
+| `--allow-from` | 否 | 私聊白名单（逗号分隔），填写 VoceChat 原始 UID，如 `1` |
+| `--group-allow-from` | 否 | 群聊白名单（逗号分隔），填写 VoceChat 原始 UID，如 `1` |
 | `--admin-sender-ids` | 否 | 插件管理员白名单（逗号分隔） |
 | `--public-webhook-base` | 否 | OpenClaw 公网基础地址（用于 webhook 输出与审批网页链接） |
-| `--webhook-api-key` | 否 | webhook 鉴权密钥，未提供时自动生成 |
+| `--webhook-api-key` | 否 | 可选反代/自定义回调鉴权密钥。VoceChat 原生 webhook 不会发送 `x-api-key`，直连时不要配置 |
 | `--disable-approvals` | 否 | 关闭审批转发/网页审批配置 |
 | `--disable-inbound` | 否 | 只配置出站，不启用 webhook 入站 |
 | `--skill-scope` | 否 | `managed`（默认）或 `none`（不装 skill） |
@@ -132,13 +132,15 @@ journalctl --user -u openclaw-gateway.service -n 120 --no-pager | rg 'vocechat|a
 
 在 VoceChat 里发送 `/vocechatctl webhook` 确认 webhook 路由注册成功。
 
+`--api-key` 和 `--webhook-api-key` 的用途不同：`--api-key` 是 VoceChat Bot API Key，用于 OpenClaw 向 VoceChat 发送消息；`--webhook-api-key` 是插件接收入站 webhook 时要求请求携带的 `x-api-key`。VoceChat 管理界面的原生 webhook 不能配置自定义 `x-api-key` 请求头，所以直连时不要设置 `--webhook-api-key`。
+
 ---
 
 ## 3. 更新已安装的插件
 
 ### 3.1 更新前须知
 
-- **配置不会丢**：脚本会先读取 `openclaw.json` 里已有的 `baseUrl`/`apiKey`/`allowFrom`/`groupAllowFrom`/`webhookApiKey` 等字段作为默认值，不带参数重跑就会沿用旧值，无需重传连接参数。
+- **常规配置不会丢**：脚本会先读取 `openclaw.json` 里已有的 `baseUrl`/`apiKey`/`defaultTo`/`allowFrom`/`groupAllowFrom` 等字段作为默认值，不带参数重跑就会沿用旧值。`webhookApiKey` 例外，默认不继承旧值；只有显式传 `--webhook-api-key` 才会写入，否则会清理旧字段以兼容 VoceChat 原生 webhook。
 - **旧版本自动备份**：更新前脚本会把当前插件目录整体备份为 `<插件目录>.bak-<时间戳>`，出问题可回退。
 - **脚本自身会被刷新**：`install.sh` 属于仓库文件，覆盖更新时新版本脚本会随仓库一起复制到插件目录，无需手工携带。
 - **增量 `.bak-*` 会累积**：每次更新产生一个备份目录，确认稳定后可清理。

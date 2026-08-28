@@ -70,7 +70,6 @@ OPENCLAW_VOCECHAT_INSTALL_PATH=/custom/path/vocechat sh ./scripts/sync-to-root-e
       "enabled": true,
       "baseUrl": "http://127.0.0.1:53000",
       "apiKey": "你的机器人 API Key",
-      "webhookApiKey": "你的 webhook API Key",
       "inboundEnabled": true,
       "webhookPath": "/vocechat/webhook"
     }
@@ -81,6 +80,8 @@ OPENCLAW_VOCECHAT_INSTALL_PATH=/custom/path/vocechat sh ./scripts/sync-to-root-e
 注意：
 
 - `baseUrl` 必须是 `OpenClaw` 进程实际可访问的地址
+- `apiKey` 是 VoceChat Bot API Key，用于 OpenClaw 向 VoceChat 发消息
+- `webhookApiKey` 不是 Bot API Key；VoceChat 原生 webhook 不会发送 `x-api-key`，直连时不要配置
 - 如果 `VoceChat` 跑在 Docker 容器内，且映射到宿主 `53000 -> 3000`，这里应写宿主端口 `53000`
 - 不要想当然写容器内 `3000`，除非 `OpenClaw` 与容器在同一网络命名空间且该地址真实可达
 

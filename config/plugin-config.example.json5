@@ -3,7 +3,7 @@
     vocechat: {
       enabled: true,
       baseUrl: "https://your-vocechat.example",
-      apiKey: "<VOCECHAT_API_KEY>",
+      apiKey: "<VOCECHAT_BOT_API_KEY>",
       privatePathTemplate: "/api/bot/send_to_user/{id}",
       groupPathTemplate: "/api/bot/send_to_group/{id}",
       defaultTo: "user:demo",
@@ -13,9 +13,9 @@
       inboundAckText: "已收到，正在处理中...",
       inboundParseMode: "balanced",
       webhookPath: "/vocechat/webhook",
-      webhookApiKey: "<WEBHOOK_API_KEY>",
-      allowFrom: ["10001"],
-      groupAllowFrom: ["10001"],
+      // webhookApiKey 仅用于反向代理/自定义回调注入 x-api-key 的场景；VoceChat 原生 webhook 直连时不要配置。
+      allowFrom: ["1"],              // 本插件私聊白名单：VoceChat 原始 UID；空数组表示不限制
+      groupAllowFrom: [],            // 本插件群聊白名单：VoceChat 原始 UID；空数组表示不限制
 
       // ============================================================
       // 群聊触发器配置
@@ -23,7 +23,7 @@
       //
       // 重要：群聊回复遵循两层门禁机制
       //
-      // 第一层门禁：OpenClaw 主程序原生配置（首要条件）
+      // 第一层门禁：VoceChat 插件基础配置（首要条件）
       //   - requireMention: 如果设置为 true，必须原生 @ 机器人才能触发
       //   - enabled: 群组是否启用
       //
@@ -33,7 +33,7 @@
       //   - questionAuto: 问句自动触发
       //   - replyToBot: 回复机器人消息触发
       //
-      // 注意：只有在主程序允许的情况下，才会评估插件触发器配置
+      // 注意：只有在插件基础门禁允许的情况下，才会评估触发器配置
       // ============================================================
 
       groups: {
@@ -57,10 +57,10 @@
         },
 
         // 特定群聊配置示例 1：客服群（群 ID: 12345）
-        // 主程序不要求 @，插件启用多种触发器
+        // 插件基础门禁不要求 @，触发器启用多种触发方式
         "12345": {
           enabled: true,
-          requireMention: false,      // 主程序不强制要求 @
+          requireMention: false,      // 插件基础门禁不强制要求 @
 
           triggers: {
             nativeMention: true,
@@ -78,26 +78,26 @@
         },
 
         // 特定群聊配置示例 2：严格模式群（群 ID: 67890）
-        // 主程序要求必须 @，插件触发器不生效
+        // 插件基础门禁要求必须 @，未 @ 时触发器不生效
         "67890": {
           enabled: true,
-          requireMention: true,        // 主程序强制要求 @ 机器人（优先级最高）
+          requireMention: true,        // 插件基础门禁强制要求 @ 机器人（优先级最高）
 
-          // 注意：当 requireMention=true 时，下面的插件触发器配置会被忽略
+          // 注意：当 requireMention=true 且消息未原生 @ 时，下面的触发器配置会被忽略
           // 只有原生 @ 才能触发回复
           triggers: {
             nativeMention: true,
-            textMention: false,        // 不生效（被主程序 requireMention 覆盖）
-            questionAuto: false,       // 不生效（被主程序 requireMention 覆盖）
+            textMention: false,        // 不生效（被 requireMention 覆盖）
+            questionAuto: false,       // 不生效（被 requireMention 覆盖）
             replyToBot: false
           }
         },
 
         // 特定群聊配置示例 3：灵活模式群（群 ID: 999）
-        // 主程序不要求 @，插件只响应专业关键词
+        // 插件基础门禁不要求 @，触发器只响应专业关键词
         "999": {
           enabled: true,
-          requireMention: false,       // 主程序不强制要求 @
+          requireMention: false,       // 插件基础门禁不强制要求 @
 
           triggers: {
             nativeMention: true,

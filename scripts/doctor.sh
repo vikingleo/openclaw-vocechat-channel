@@ -179,6 +179,7 @@ done
 
 CONFIG_FILE=$(resolve_config_path)
 SERVER_INSTALL_DIR_RESOLVED=$(expand_home "$SERVER_INSTALL_DIR")
+FIELD_SEP=$(printf '\037')
 if [ -n "$SERVER_DATA_DIR" ]; then
   SERVER_DATA_DIR_RESOLVED=$(expand_home "$SERVER_DATA_DIR")
 else
@@ -252,7 +253,7 @@ const parts = [
   String(vocechat.defaultTo || "").trim(),
   String(adminIds.length),
 ];
-process.stdout.write(parts.join("\t"));
+process.stdout.write(parts.join("\u001f"));
 NODE
 )
 
@@ -264,7 +265,7 @@ case "$CONFIG_SUMMARY" in
     fail "OpenClaw 配置文件不是合法 JSON"
     ;;
   *)
-    IFS='	' read -r _ CFG_ENABLED CFG_BASE_URL CFG_API_KEY CFG_INBOUND CFG_WEBHOOK_PATH CFG_WEBHOOK_API_KEY CFG_DEFAULT_TO CFG_ADMIN_COUNT <<EOF
+    IFS="$FIELD_SEP" read -r _ CFG_ENABLED CFG_BASE_URL CFG_API_KEY CFG_INBOUND CFG_WEBHOOK_PATH CFG_WEBHOOK_API_KEY CFG_DEFAULT_TO CFG_ADMIN_COUNT <<EOF
 $CONFIG_SUMMARY
 EOF
     if [ "$CFG_BASE_URL" != "" ]; then
@@ -289,9 +290,9 @@ EOF
         fail "VoceChat 已启用入站，但 webhookPath 缺失"
       fi
       if [ "$CFG_WEBHOOK_API_KEY" != "" ]; then
-        ok "VoceChat webhookApiKey 已配置"
+        warn "VoceChat webhookApiKey 已配置；仅当反向代理或自定义回调会发送 x-api-key 时才需要"
       else
-        warn "VoceChat 入站已启用，但 webhookApiKey 缺失"
+        ok "VoceChat webhookApiKey 未配置（适合 VoceChat 原生 webhook）"
       fi
     else
       warn "VoceChat 入站 webhook 未启用"

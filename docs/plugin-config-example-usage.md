@@ -128,9 +128,9 @@ channels.vocechat
 ├── inboundAckText              # 入站确认内容
 ├── inboundParseMode            # 入站解析模式
 ├── webhookPath                 # webhook 路径
-├── webhookApiKey               # webhook 鉴权
-├── allowFrom                   # 私聊允许发送者
-├── groupAllowFrom              # 群聊允许发送者
+├── webhookApiKey               # 可选反代/自定义回调鉴权；原生 VoceChat webhook 直连时不要配置
+├── allowFrom                   # 私聊允许发送者，填写 VoceChat 原始 UID，如 "1"
+├── groupAllowFrom              # 群聊允许发送者，填写 VoceChat 原始 UID，如 "1"
 ├── groups                      # ← 群聊触发器配置（新增）
 │   ├── "*"                     # 默认配置
 │   ├── "12345"                 # 客服群示例
@@ -159,7 +159,7 @@ channels.vocechat
 文件开头的注释说明了**两层门禁机制**：
 
 ```
-第一层：OpenClaw 主程序原生配置（首要条件）
+第一层：VoceChat 插件基础配置（首要条件）
   - requireMention: 如果设置为 true，必须原生 @ 机器人才能触发
   - enabled: 群组是否启用
 
@@ -181,6 +181,13 @@ channels.vocechat
 两者提供两种配置方式，用户可以根据偏好选择：
 - **环境变量** → 使用 `.env.example`
 - **JSON 配置** → 使用 `plugin-config.example.json5`
+
+## Webhook 鉴权说明
+
+- `apiKey` 是 VoceChat Bot API Key，用于 OpenClaw 调 VoceChat Bot API 发消息。
+- `webhookApiKey` 是本插件接收 webhook 时校验 `x-api-key` 的可选密钥，不是 VoceChat Bot API Key。
+- VoceChat 原生 webhook 不能配置自定义 `x-api-key` 请求头，直连 `http://<openclaw-host>:18789/vocechat/webhook` 时应删除 `webhookApiKey`。
+- 只有你在前面加了反向代理或自定义转发器，并确认它会向 OpenClaw 转发 `x-api-key`，才需要配置 `webhookApiKey`。
 
 ## 常见问题
 

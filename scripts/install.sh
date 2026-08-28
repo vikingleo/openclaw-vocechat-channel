@@ -83,7 +83,7 @@ usage() {
   --group-allow-from <列表> 群聊白名单，逗号分隔
   --admin-sender-ids <列表> 插件管理员白名单，逗号分隔，如 telegram:123,vocechat:user:1
   --webhook-path <路径>     入站 webhook 路径，默认 /vocechat/webhook
-  --webhook-api-key <KEY>   webhook 鉴权密钥；未提供时自动生成
+  --webhook-api-key <KEY>   可选反代鉴权密钥；VoceChat 原生 webhook 不会发送 x-api-key
   --public-webhook-base <URL>
                             OpenClaw 公网基础地址；默认同时用于 webhook 输出和网页审批链接
   --approval-public-base <URL>
@@ -359,13 +359,6 @@ if (/^\d+$/.test(withoutPrefix)) {
   process.exit(0);
 }
 process.exit(2);
-NODE
-}
-
-random_secret() {
-  node --input-type=commonjs - <<'NODE'
-const crypto = require("crypto");
-process.stdout.write(crypto.randomBytes(24).toString("hex"));
 NODE
 }
 
@@ -969,6 +962,7 @@ CONFIG_FILE=$(resolve_config_path)
 CONFIG_FILE=$(expand_home "$CONFIG_FILE")
 SKILL_TARGET_DIR="$HOME/.openclaw/skills/vocechat-send"
 PLUGIN_SKILL_SOURCE="$REPO_DIR/skills/vocechat-send"
+FIELD_SEP=$(printf '\037')
 
 CURRENT_FIELDS=$(CONFIG_PATH="$CONFIG_FILE" node --input-type=commonjs - <<'NODE'
 const fs = require("fs");
@@ -991,17 +985,16 @@ const fields = [
   Array.isArray(vocechat.groupAllowFrom) ? vocechat.groupAllowFrom.join(",") : String(vocechat.groupAllowFrom || "").trim(),
   Array.isArray(vocechat.management?.adminSenderIds) ? vocechat.management.adminSenderIds.join(",") : "",
   String(vocechat.webhookPath || "/vocechat/webhook").trim(),
-  String(vocechat.webhookApiKey || "").trim(),
   Array.isArray(telegram.allowFrom) && telegram.allowFrom.length > 0 ? `telegram:${String(telegram.allowFrom[0]).trim()}` : "",
   String(approvals.enabled === false ? "false" : "true"),
   String(approvals.publicBaseUrl || "").trim(),
   String(approvals.routePath || "/vocechat/approval").trim(),
 ];
-process.stdout.write(fields.join("\t"));
+process.stdout.write(fields.join("\u001f"));
 NODE
 )
 
-IFS='	' read -r EXISTING_ENABLED EXISTING_BASE_URL EXISTING_API_KEY EXISTING_DEFAULT_TO EXISTING_ALLOW_FROM EXISTING_GROUP_ALLOW_FROM EXISTING_ADMIN_IDS EXISTING_WEBHOOK_PATH EXISTING_WEBHOOK_API_KEY SUGGESTED_TELEGRAM_ADMIN EXISTING_APPROVALS_ENABLED EXISTING_APPROVAL_PUBLIC_BASE EXISTING_APPROVAL_ROUTE_PATH <<EOF
+IFS="$FIELD_SEP" read -r EXISTING_ENABLED EXISTING_BASE_URL EXISTING_API_KEY EXISTING_DEFAULT_TO EXISTING_ALLOW_FROM EXISTING_GROUP_ALLOW_FROM EXISTING_ADMIN_IDS EXISTING_WEBHOOK_PATH SUGGESTED_TELEGRAM_ADMIN EXISTING_APPROVALS_ENABLED EXISTING_APPROVAL_PUBLIC_BASE EXISTING_APPROVAL_ROUTE_PATH <<EOF
 $CURRENT_FIELDS
 EOF
 
@@ -1012,7 +1005,6 @@ EOF
 [ -n "$GROUP_ALLOW_FROM_RAW" ] || GROUP_ALLOW_FROM_RAW=$EXISTING_GROUP_ALLOW_FROM
 [ -n "$ADMIN_SENDER_IDS_RAW" ] || ADMIN_SENDER_IDS_RAW=$EXISTING_ADMIN_IDS
 [ -n "$WEBHOOK_PATH" ] || WEBHOOK_PATH=$EXISTING_WEBHOOK_PATH
-[ -n "$WEBHOOK_API_KEY" ] || WEBHOOK_API_KEY=$EXISTING_WEBHOOK_API_KEY
 [ -n "$APPROVAL_PUBLIC_BASE" ] || APPROVAL_PUBLIC_BASE=$EXISTING_APPROVAL_PUBLIC_BASE
 [ -n "$APPROVAL_ROUTE_PATH" ] || APPROVAL_ROUTE_PATH=$EXISTING_APPROVAL_ROUTE_PATH
 
@@ -1064,10 +1056,6 @@ fi
 ALLOW_FROM_RAW=$(normalize_csv_list "$ALLOW_FROM_RAW")
 GROUP_ALLOW_FROM_RAW=$(normalize_csv_list "$GROUP_ALLOW_FROM_RAW")
 ADMIN_SENDER_IDS_RAW=$(normalize_csv_list "$ADMIN_SENDER_IDS_RAW")
-
-if [ "$INBOUND_ENABLED" = "true" ] && [ -z "$WEBHOOK_API_KEY" ]; then
-  WEBHOOK_API_KEY=$(random_secret)
-fi
 
 if [ -n "$BASE_URL" ] && [ -n "$API_KEY" ]; then
   CHANNEL_ENABLED="true"
@@ -1210,9 +1198,14 @@ if (groupAllowFrom.length > 0) {
 vocechat.inboundEnabled = String(process.env.INBOUND_ENABLED || "true") === "true";
 if (vocechat.inboundEnabled) {
   vocechat.webhookPath = String(process.env.WEBHOOK_PATH || "/vocechat/webhook").trim() || "/vocechat/webhook";
-  if (String(process.env.WEBHOOK_API_KEY || "").trim()) {
-    vocechat.webhookApiKey = String(process.env.WEBHOOK_API_KEY || "").trim();
+  const webhookApiKey = String(process.env.WEBHOOK_API_KEY || "").trim();
+  if (webhookApiKey) {
+    vocechat.webhookApiKey = webhookApiKey;
+  } else {
+    delete vocechat.webhookApiKey;
   }
+} else {
+  delete vocechat.webhookApiKey;
 }
 const management = ensureRecord(vocechat, "management");
 const adminSenderIds = parseList(process.env.ADMIN_SENDER_IDS_RAW).map((item) => String(item));
@@ -1321,11 +1314,13 @@ else
 fi
 if [ "$INBOUND_ENABLED" = "true" ]; then
   log "  入站本地路由: 已配置 ($WEBHOOK_PATH)"
+  if [ -n "$WEBHOOK_API_KEY" ]; then
+    log "  webhook 鉴权头: x-api-key: $WEBHOOK_API_KEY"
+  else
+    log "  webhook 鉴权: 未配置（适合 VoceChat 原生 webhook）"
+  fi
   if [ -n "$WEBHOOK_URL" ]; then
     log "  webhook URL: $WEBHOOK_URL"
-    if [ -n "$WEBHOOK_API_KEY" ]; then
-      log "  webhook 鉴权头: x-api-key: $WEBHOOK_API_KEY"
-    fi
     log "  说明: OpenClaw 侧已配置完成；仍需确保外部网络能访问该 URL，并在 VoceChat 服务端把 webhook 指向这里。"
   else
     log "  说明: OpenClaw 本地入站已配置，但 VoceChat -> OpenClaw 的外部回调仍需你提供公网 URL/反向代理并在 VoceChat 端完成 webhook 指向。"

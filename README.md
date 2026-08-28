@@ -18,7 +18,7 @@
 | [docs/plugin-config-example-usage.md](docs/plugin-config-example-usage.md) | 示例配置文件的使用说明：查看、复制片段、三种使用场景 |
 | [docs/group-trigger-quick-summary.md](docs/group-trigger-quick-summary.md) | 群聊触发器快速总结：四种触发方式、配置优先级、快速开始 |
 | [docs/group-trigger-config-upgrade.md](docs/group-trigger-config-upgrade.md) | 群聊触发器升级指南：完整升级步骤、配置示例、兼容性说明 |
-| [docs/group-trigger-gate-mechanism.md](docs/group-trigger-gate-mechanism.md) | 两层门禁机制详解：OpenClaw 主程序门禁与插件触发器的协作流程 |
+| [docs/group-trigger-gate-mechanism.md](docs/group-trigger-gate-mechanism.md) | 两层门禁机制详解：插件基础门禁与触发器的协作流程 |
 | [docs/gate-mechanism-supplement.md](docs/gate-mechanism-supplement.md) | 门禁机制补充说明：代码改动、配置场景示例、测试要点 |
 | [docs/group-trigger-implementation-checklist.md](docs/group-trigger-implementation-checklist.md) | 实施检查清单：更新代码、构建、配置、验证的全流程清单 |
 
@@ -178,12 +178,12 @@ openclaw config edit
     vocechat: {
       enabled: true,
       baseUrl: "https://your-vocechat.example",
-      apiKey: "<VOCECHAT_API_KEY>",
+      apiKey: "<VOCECHAT_BOT_API_KEY>",
       inboundEnabled: true,
       webhookPath: "/vocechat/webhook",
       defaultTo: "user:demo",
-      allowFrom: ["10001"],
-      groupAllowFrom: ["10001"],
+      allowFrom: ["1"],
+      groupAllowFrom: [],
       queueControl: {
         enabled: true,
         token: "<OPTIONAL_QUEUE_CONTROL_TOKEN>",
@@ -196,6 +196,12 @@ openclaw config edit
   }
 }
 ```
+
+注意：
+
+- `apiKey` 是 VoceChat Bot API Key，用于 OpenClaw 调 VoceChat Bot API 发送消息，必须配置。
+- `webhookApiKey` 不是 VoceChat 后台创建的 Bot API Key。VoceChat 原生 webhook 不会发送 `x-api-key`，直连时不要配置；只有经过反向代理或自定义回调转发器且会注入 `x-api-key` 时，才需要配置。
+- `allowFrom` / `groupAllowFrom` 是本插件的发送者白名单，值是 VoceChat 原始 UID 字符串，例如 `"1"`；不要写成 `vocechat:user:1`。空数组表示不限制。
 
 ### 示例文件说明
 
@@ -229,7 +235,7 @@ git pull --ff-only
 
 行为说明：
 
-- **配置不丢**：脚本读取 `openclaw.json` 现有 `baseUrl`/`apiKey`/`allowFrom`/`groupAllowFrom`/`webhookApiKey` 等字段作为默认值，不带参数重跑即沿用旧值，无需重传连接参数
+- **常规配置不丢**：脚本读取 `openclaw.json` 现有 `baseUrl`/`apiKey`/`defaultTo`/`allowFrom`/`groupAllowFrom` 等字段作为默认值，不带参数重跑即沿用旧值；`webhookApiKey` 例外，默认不继承旧值，只有显式传 `--webhook-api-key` 才写入，否则会清理旧字段以兼容 VoceChat 原生 webhook
 - **旧版本自动备份**：覆盖前把插件目录整体备份为 `<插件目录>.bak-<时间戳>`，出问题可恢复
 - **脚本自身会随更新刷新**：`install.sh` 属于仓库文件，覆盖更新时新版本自动复制到插件目录，无需手工携带
 - **`--link` 安装例外**：插件目录即仓库本身时，脚本检测到路径相同会跳过文件覆盖，更新改为在仓库 `git pull` 后重跑脚本（仅刷新配置、skill 与 gateway）；若插件实际从 `~/.openclaw/extensions/vocechat` 加载，使用 `sh ./scripts/sync-to-root-extension.sh`
@@ -515,7 +521,7 @@ sh ./scripts/sync-to-root-extension.sh
 也就是说：
 
 - 纯出站（OpenClaw -> VoceChat 发消息/附件）可以一键配完
-- 入站 webhook（VoceChat -> OpenClaw）能把 OpenClaw 本地路由和鉴权一次配好
+- 入站 webhook（VoceChat -> OpenClaw）会写入 OpenClaw 本地路由；默认不写 `webhookApiKey`，因为 VoceChat 原生 webhook 不会携带 `x-api-key`
 - 审批转发与网页审批链接，也能随安装脚本一起写入 `channels.vocechat.approvals`
 - 但公网入口和 VoceChat 端 webhook 指向，仍然属于外部部署步骤
 
@@ -573,6 +579,8 @@ sh ./scripts/sync-to-root-extension.sh
   - 说明 unit 已写但服务没起来，通常需要 `systemctl status vocechat.service` 进一步看日志
 - `channels.vocechat.apiKey 缺失`
   - 说明插件骨架已经装了，但 Bot API Key 还没补齐，出站发送会不可用
+- `VoceChat webhookApiKey 已配置`
+  - 只有反向代理或自定义回调会注入 `x-api-key` 时才需要；直连 VoceChat 原生 webhook 时应删除该字段
 
 如果你的服务名或安装目录不是默认值，可以显式传参：
 
@@ -705,10 +713,14 @@ sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/re
   - 默认发送目标
 - `inboundEnabled`
   - 是否启用 webhook 入站
+- `webhookPath`
+  - OpenClaw 接收 VoceChat webhook 的本地路径，默认 `/vocechat/webhook`
+- `webhookApiKey`
+  - 可选反向代理/自定义回调鉴权；VoceChat 原生 webhook 不会发送 `x-api-key`，直连时应留空
 - `inboundAckEnabled` / `inboundAckText`
   - 是否发送入站确认及确认内容
 - `allowFrom` / `groupAllowFrom`
-  - 私聊和群聊允许发送者
+  - 本插件的私聊和群聊发送者白名单，填写 VoceChat 原始 UID 字符串，例如 `"1"`
 - `queueControl.itemTimeoutMs`
   - 入站执行队列当前项超时时间，默认 600000 ms
 - `accounts`
@@ -729,25 +741,25 @@ sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/re
 **重要**：群聊回复遵循两层门禁机制：
 
 ```
-第一层：OpenClaw 主程序原生配置（首要门禁）
+第一层：VoceChat 插件基础配置（首要门禁）
   ↓ 通过后
 第二层：插件触发器配置（细化控制）
 ```
 
-#### 第一层门禁：OpenClaw 主程序配置
+#### 第一层门禁：VoceChat 插件基础配置
 
-以下 OpenClaw 原生配置作为首要条件，必须先满足：
+以下 `channels.vocechat` 插件配置作为首要条件，必须先满足：
 
 1. **`requireMention`**（最高优先级）
-   - 如果主程序设置 `requireMention: true`，则**必须原生 @ 机器人**才能触发
+   - 如果插件设置 `requireMention: true`，则**必须原生 @ 机器人**才能触发
    - 此时插件的所有其他触发器（文本匹配、问句等）都会被忽略
-   - 只有主程序未设置或设置为 `false` 时，才进入插件的触发器评估
+   - 只有插件未设置或设置为 `false` 时，才进入触发器评估
 
 2. **`groupPolicy`**
-   - 主程序的群组策略设置
+   - 插件的群组策略设置
 
 3. **`groupAllowFrom`**
-   - 主程序的群聊发送者白名单
+   - 插件的群聊发送者白名单，填写 VoceChat 原始 UID 字符串，例如 `"1"`
 
 **配置位置**：
 ```json5
@@ -757,7 +769,7 @@ sh scripts/vocechat-send.sh --to user:2 --text "附件见下" --file /path/to/re
       "groups": {
         "12345": {
           "enabled": true,
-          "requireMention": false,  // ← OpenClaw 主程序原生配置（第一层门禁）
+          "requireMention": false,  // ← VoceChat 插件基础配置（第一层门禁）
           "triggers": {             // ← 插件触发器配置（第二层门禁）
             "nativeMention": true,
             "textMention": true,
