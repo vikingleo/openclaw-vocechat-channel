@@ -4,6 +4,32 @@
 
 它负责把宿主与 `VoceChat Bot API + Webhook` 连接起来，并补充管理员可用的卡片式管理面板。
 
+## 文档索引
+
+插件的完整文档分为「使用指南」与「设计说明」两类，按需查阅：
+
+### 安装与使用
+
+| 文档 | 说明 |
+|------|------|
+| [docs/install-update-guide.md](docs/install-update-guide.md) | **安装与更新指南**：首次安装、已安装插件升级、安装方式选择、常见问题 |
+| [config/plugin-config.example.json5](config/plugin-config.example.json5) | 完整配置示例（含中文注释），配置参考第一入口 |
+| [.env.example](.env.example) | 环境变量配置示例（含中文说明），按群组与全局两级配置 |
+| [docs/plugin-config-example-usage.md](docs/plugin-config-example-usage.md) | 示例配置文件的使用说明：查看、复制片段、三种使用场景 |
+| [docs/group-trigger-quick-summary.md](docs/group-trigger-quick-summary.md) | 群聊触发器快速总结：四种触发方式、配置优先级、快速开始 |
+| [docs/group-trigger-config-upgrade.md](docs/group-trigger-config-upgrade.md) | 群聊触发器升级指南：完整升级步骤、配置示例、兼容性说明 |
+| [docs/group-trigger-gate-mechanism.md](docs/group-trigger-gate-mechanism.md) | 两层门禁机制详解：OpenClaw 主程序门禁与插件触发器的协作流程 |
+| [docs/gate-mechanism-supplement.md](docs/gate-mechanism-supplement.md) | 门禁机制补充说明：代码改动、配置场景示例、测试要点 |
+| [docs/group-trigger-implementation-checklist.md](docs/group-trigger-implementation-checklist.md) | 实施检查清单：更新代码、构建、配置、验证的全流程清单 |
+
+### 历史升级与设计
+
+| 文档 | 说明 |
+|------|------|
+| [docs/vocechat-inbound-image-upgrade.md](docs/vocechat-inbound-image-upgrade.md) | 入站图片能力迁移：新机器升级步骤、宿主配置校正 |
+| [docs/vocechat-inbound-merge-design.md](docs/vocechat-inbound-merge-design.md) | 入站图文合并设计说明：待实施升级的思路与问题定义 |
+| [docs/openclaw-provider-cleanup.md](docs/openclaw-provider-cleanup.md) | OpenClaw Provider 清理说明：移除废弃 provider 及残留痕迹 |
+
 ## 当前能力
 
 - VoceChat 出站消息发送
@@ -38,11 +64,7 @@
 5. 在默认“稳定优先”模式下，只要 OCR 已成功，插件就不再把图片作为原生 `MediaPath` 注入，避免当前 OpenClaw/provider 的坏图报错直接打断整轮回复。
 6. 下载失败时，仍会显式告诉 agent “用户发的是图片”，并附带资源 URL、失败原因与 `messageId`，避免退化成一串无意义路径字符串。
 
-详细升级说明与新机器操作步骤见：
-
-- [docs/vocechat-inbound-image-upgrade.md](docs/vocechat-inbound-image-upgrade.md)
-- [docs/openclaw-provider-cleanup.md](docs/openclaw-provider-cleanup.md)
-- [docs/vocechat-inbound-merge-design.md](docs/vocechat-inbound-merge-design.md)
+详细升级说明、新机器操作步骤与安装/更新完整指南见 [文档索引](#文档索引)。
 
 ### 队列控制接口
 
@@ -189,7 +211,33 @@ openclaw config edit
 
 ## 一键安装与卸载
 
-### 从 Clone 到安装完成
+本仓库提供三个运维脚本：`install.sh`（安装/更新）、`uninstall.sh`（卸载）、`doctor.sh`（体检）。
+
+- **首次安装**：按本文下方「从 Clone 到安装完成」或 [docs/install-update-guide.md](docs/install-update-guide.md) 完整指南执行
+- **已安装更新**：见下方「更新已安装的插件」
+- **完整安装/更新流程与所有参数**：[docs/install-update-guide.md](docs/install-update-guide.md)
+
+### 更新已安装的插件
+
+已安装插件的更新直接复用安装脚本，脚本会自动备份旧版本、覆盖插件文件并复用现有配置：
+
+```bash
+cd /path/to/openclaw-vocechat-channel
+git pull --ff-only
+./scripts/install.sh --yes
+```
+
+行为说明：
+
+- **配置不丢**：脚本读取 `openclaw.json` 现有 `baseUrl`/`apiKey`/`allowFrom`/`groupAllowFrom`/`webhookApiKey` 等字段作为默认值，不带参数重跑即沿用旧值，无需重传连接参数
+- **旧版本自动备份**：覆盖前把插件目录整体备份为 `<插件目录>.bak-<时间戳>`，出问题可恢复
+- **脚本自身会随更新刷新**：`install.sh` 属于仓库文件，覆盖更新时新版本自动复制到插件目录，无需手工携带
+- **`--link` 安装例外**：插件目录即仓库本身时，脚本检测到路径相同会跳过文件覆盖，更新改为在仓库 `git pull` 后重跑脚本（仅刷新配置、skill 与 gateway）；若插件实际从 `~/.openclaw/extensions/vocechat` 加载，使用 `sh ./scripts/sync-to-root-extension.sh`
+- **备份目录累积**：每次更新产生一个 `.bak-*`，确认稳定后可清理
+
+更新后仍建议跑一次 `./scripts/doctor.sh` 验证。
+
+### 从 Clone 到安装完成（首次安装）
 
 如果你是从一台空白机器开始，建议先走一遍最小闭环：
 
