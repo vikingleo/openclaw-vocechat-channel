@@ -143,3 +143,48 @@ test("install script writes webhookApiKey only when explicitly provided", () => 
   assert.equal(result.config.channels.vocechat.webhookApiKey, "explicit-webhook-key");
   assert.match(result.output, /webhook 鉴权头: x-api-key: explicit-webhook-key/);
 });
+
+test("install script fails early when config file is not writable", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "openclaw-vocechat-install-ro-"));
+  const configPath = join(tempDir, "openclaw.json");
+  const fakeOpenClaw = createFakeOpenClaw(tempDir);
+  writeFileSync(
+    configPath,
+    `${JSON.stringify({ channels: { vocechat: { enabled: true, baseUrl: "http://127.0.0.1:3000", apiKey: "old-bot-api-key" } } }, null, 2)}\n`,
+    "utf8",
+  );
+  chmodSync(configPath, 0o400);
+
+  try {
+    assert.throws(
+      () =>
+        execFileSync(
+          "sh",
+          [
+            installScriptPath,
+            "--config",
+            configPath,
+            "--base-url",
+            "http://127.0.0.1:3000",
+            "--api-key",
+            "bot-api-key",
+            "--skill-scope",
+            "none",
+            "--skip-restart",
+            "--yes",
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              HOME: tempDir,
+              OPENCLAW_BIN: fakeOpenClaw,
+            },
+          },
+        ),
+      /配置文件不可写|permission denied/,
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

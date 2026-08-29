@@ -1069,6 +1069,15 @@ fi
 
 ensure_safe_server_source_selection
 
+if [ -e "$CONFIG_FILE" ] && [ ! -w "$CONFIG_FILE" ]; then
+  die "配置文件不可写: $CONFIG_FILE（请先修复权限或用可写路径运行）"
+fi
+
+CONFIG_PARENT_DIR=$(dirname "$CONFIG_FILE")
+if [ ! -d "$CONFIG_PARENT_DIR" ] || [ ! -w "$CONFIG_PARENT_DIR" ]; then
+  die "配置目录不可写: $CONFIG_PARENT_DIR（请先修复权限或用可写路径运行）"
+fi
+
 PLUGIN_INSTALL_PATH=$(discover_plugin_install_path)
 if [ -n "$PLUGIN_INSTALL_PATH" ]; then
   PLUGIN_INSTALL_PATH=$(expand_home "$PLUGIN_INSTALL_PATH")

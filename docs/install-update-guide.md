@@ -34,6 +34,15 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 - 已安装 OpenClaw 主程序（`openclaw` 命令可用）
 - 已有一个 VoceChat 服务端（本机、Docker 或远程），并拿到 Bot API Key
   - 若还未初始化 VoceChat：先执行 `--install-server` 装服务端，初始化拿到 API Key 后再执行一次补全（见 2.5）
+- 运行安装脚本的用户必须能读写 OpenClaw 配置文件（默认 `~/.openclaw/openclaw.json`）；例如该文件权限应至少允许文件属主写入，推荐使用 `600`
+
+如果配置文件当前是只读的，例如权限为 `400`，先修复权限再运行安装器：
+
+```bash
+chmod 600 ~/.openclaw/openclaw.json
+```
+
+不要使用 `sudo ./scripts/install.sh` 代替权限修复；这可能让配置备份、插件目录或 OpenClaw 运行环境归属到错误用户。
 
 ### 2.2 克隆仓库
 

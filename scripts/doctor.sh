@@ -220,6 +220,14 @@ else
   fail "OpenClaw 配置文件不存在: $CONFIG_FILE"
 fi
 
+if [ -e "$CONFIG_FILE" ] && [ -w "$CONFIG_FILE" ]; then
+  ok "OpenClaw 配置文件可写"
+elif [ -e "$CONFIG_FILE" ]; then
+  warn "OpenClaw 配置文件只读；install.sh 在写入配置前会失败"
+else
+  warn "OpenClaw 配置文件不可检查写权限，因为文件不存在"
+fi
+
 if ! have_cmd node; then
   printf '\n'
   printf 'Summary: %s failure(s), %s warning(s)\n' "$FAIL_COUNT" "$WARN_COUNT"
