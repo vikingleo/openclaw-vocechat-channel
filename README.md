@@ -437,6 +437,7 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 - `--public-webhook-base` 现在默认同时用于：
   - 安装完成后的 webhook URL 输出
   - `channels.vocechat.approvals.publicBaseUrl`
+- `--public-webhook-base` 和 `--approval-public-base` 都必须填 http(s) URL base，例如 `https://openclaw.example.com`；不要填 `/vocechat/webhook` 或 `/vocechat/approval` 这类路由路径
 - 如果你的 `VoceChat` webhook 实际走的是容器到宿主机内部地址，例如 `http://172.17.0.1:18789/vocechat/webhook`，这完全正常；`--public-webhook-base` 仍然只需要用于“对外展示的 URL”和审批网页公网入口
 - 如需把审批网页挂到另一个公网地址，可额外传：
   - `--approval-public-base https://approval.example.com`

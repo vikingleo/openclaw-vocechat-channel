@@ -73,7 +73,8 @@ chmod +x ./scripts/install.sh ./scripts/uninstall.sh ./scripts/doctor.sh
 | `--allow-from` | 否 | 私聊白名单（逗号分隔），填写 VoceChat 原始 UID，如 `1` |
 | `--group-allow-from` | 否 | 群聊白名单（逗号分隔），填写 VoceChat 原始 UID，如 `1` |
 | `--admin-sender-ids` | 否 | 插件管理员白名单（逗号分隔） |
-| `--public-webhook-base` | 否 | OpenClaw 公网基础地址（用于 webhook 输出与审批网页链接） |
+| `--public-webhook-base` | 否 | OpenClaw 公网基础地址（用于 webhook 输出与审批网页链接），填写 `https://openclaw.example.com` 这类 http(s) URL base，不要带 `/vocechat/webhook` 或 `/vocechat/approval` |
+| `--approval-public-base` | 否 | 单独指定审批网页公网基础地址；同样只能填 http(s) URL base，审批路径放在 `--approval-route-path` |
 | `--webhook-api-key` | 否 | 可选反代/自定义回调鉴权密钥。VoceChat 原生 webhook 不会发送 `x-api-key`，直连时不要配置 |
 | `--disable-approvals` | 否 | 关闭审批转发/网页审批配置 |
 | `--disable-inbound` | 否 | 只配置出站，不启用 webhook 入站 |

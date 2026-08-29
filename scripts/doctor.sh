@@ -250,6 +250,7 @@ try {
 }
 const vocechat = root.channels && typeof root.channels === "object" ? root.channels.vocechat || {} : {};
 const adminIds = Array.isArray(vocechat.management?.adminSenderIds) ? vocechat.management.adminSenderIds : [];
+const approvals = vocechat && typeof vocechat === "object" ? vocechat.approvals || {} : {};
 const parts = [
   "ok",
   String(vocechat.enabled === true),
@@ -260,6 +261,7 @@ const parts = [
   String(vocechat.webhookApiKey || "").trim(),
   String(vocechat.defaultTo || "").trim(),
   String(adminIds.length),
+  String(approvals.publicBaseUrl || "").trim(),
 ];
 process.stdout.write(parts.join("\u001f"));
 NODE
@@ -273,7 +275,7 @@ case "$CONFIG_SUMMARY" in
     fail "OpenClaw 配置文件不是合法 JSON"
     ;;
   *)
-    IFS="$FIELD_SEP" read -r _ CFG_ENABLED CFG_BASE_URL CFG_API_KEY CFG_INBOUND CFG_WEBHOOK_PATH CFG_WEBHOOK_API_KEY CFG_DEFAULT_TO CFG_ADMIN_COUNT <<EOF
+    IFS="$FIELD_SEP" read -r _ CFG_ENABLED CFG_BASE_URL CFG_API_KEY CFG_INBOUND CFG_WEBHOOK_PATH CFG_WEBHOOK_API_KEY CFG_DEFAULT_TO CFG_ADMIN_COUNT CFG_APPROVAL_PUBLIC_BASE <<EOF
 $CONFIG_SUMMARY
 EOF
     if [ "$CFG_BASE_URL" != "" ]; then
@@ -309,6 +311,12 @@ EOF
       ok "VoceChat defaultTo 已配置"
     else
       warn "VoceChat defaultTo 未配置"
+    fi
+    if [ "$CFG_APPROVAL_PUBLIC_BASE" != "" ]; then
+      case "$CFG_APPROVAL_PUBLIC_BASE" in
+        http://*|https://*) ok "VoceChat approvals.publicBaseUrl 是 http(s) URL" ;;
+        *) warn "VoceChat approvals.publicBaseUrl 不是 http(s) URL；请填写公网基础地址，不要填写 /vocechat/approval 这类路由路径" ;;
+      esac
     fi
     if [ "$CFG_ADMIN_COUNT" -gt 0 ] 2>/dev/null; then
       ok "VoceChat 管理员白名单已配置"

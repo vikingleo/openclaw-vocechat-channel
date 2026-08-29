@@ -189,6 +189,12 @@ channels.vocechat
 - VoceChat 原生 webhook 不能配置自定义 `x-api-key` 请求头，直连 `http://<openclaw-host>:18789/vocechat/webhook` 时应删除 `webhookApiKey`。
 - 只有你在前面加了反向代理或自定义转发器，并确认它会向 OpenClaw 转发 `x-api-key`，才需要配置 `webhookApiKey`。
 
+## 审批公网地址说明
+
+- `approvals.publicBaseUrl` 只填公网基础地址，例如 `https://openclaw.example.com`。
+- `approvals.routePath` 才填审批路由，例如 `/vocechat/approval`。
+- 不要把 `/vocechat/approval` 写进 `publicBaseUrl`，否则会得到 `/vocechat/approval/vocechat/approval` 这类重复路径。
+
 ## 常见问题
 
 ### Q1: 是否需要完整复制整个文件？

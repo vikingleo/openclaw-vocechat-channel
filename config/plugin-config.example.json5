@@ -130,6 +130,7 @@
       },
       approvals: {
         enabled: true,
+        // 公网基础地址，只填 http(s) URL base；不要填 /vocechat/approval，路径放在 routePath。
         publicBaseUrl: "https://openclaw.example.com",
         routePath: "/vocechat/approval",
         notifyAdminSenderIds: ["telegram:123456789", "vocechat:user:1"],

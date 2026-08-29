@@ -87,7 +87,7 @@ usage() {
   --public-webhook-base <URL>
                             OpenClaw 公网基础地址；默认同时用于 webhook 输出和网页审批链接
   --approval-public-base <URL>
-                            单独指定审批网页使用的 OpenClaw 公网基础地址；默认复用 --public-webhook-base
+                            单独指定审批网页使用的 OpenClaw 公网基础地址；默认复用 --public-webhook-base，必须是 http(s) URL，不要填路由路径
   --approval-route-path <路径>
                             审批网页路由，默认 /vocechat/approval
   --disable-approvals       关闭 VoceChat 审批转发/网页审批配置
@@ -333,6 +333,27 @@ const items = raw
   .filter(Boolean);
 process.stdout.write(items.join(","));
 NODE
+}
+
+is_http_url_base() {
+  case "$1" in
+    http://*|https://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_public_base_inputs() {
+  if [ -n "$PUBLIC_WEBHOOK_BASE" ] && ! is_http_url_base "$PUBLIC_WEBHOOK_BASE"; then
+    warn "OpenClaw 公网基础地址必须是 http(s) URL，已忽略: $PUBLIC_WEBHOOK_BASE"
+    PUBLIC_WEBHOOK_BASE=""
+  fi
+  if [ -n "$APPROVAL_PUBLIC_BASE" ] && ! is_http_url_base "$APPROVAL_PUBLIC_BASE"; then
+    warn "审批公网地址必须是 http(s) URL，已忽略: $APPROVAL_PUBLIC_BASE（路径请配置到 --approval-route-path）"
+    APPROVAL_PUBLIC_BASE=""
+  fi
+  if [ -z "$APPROVAL_PUBLIC_BASE" ] && [ -n "$PUBLIC_WEBHOOK_BASE" ]; then
+    APPROVAL_PUBLIC_BASE=$PUBLIC_WEBHOOK_BASE
+  fi
 }
 
 normalize_target_default() {
@@ -1008,9 +1029,7 @@ EOF
 [ -n "$APPROVAL_PUBLIC_BASE" ] || APPROVAL_PUBLIC_BASE=$EXISTING_APPROVAL_PUBLIC_BASE
 [ -n "$APPROVAL_ROUTE_PATH" ] || APPROVAL_ROUTE_PATH=$EXISTING_APPROVAL_ROUTE_PATH
 
-if [ -z "$APPROVAL_PUBLIC_BASE" ] && [ -n "$PUBLIC_WEBHOOK_BASE" ]; then
-  APPROVAL_PUBLIC_BASE=$PUBLIC_WEBHOOK_BASE
-fi
+normalize_public_base_inputs
 
 if [ "$INSTALL_SERVER" = "true" ] && [ -z "$BASE_URL" ]; then
   BASE_URL="http://$SERVER_HOST:$SERVER_PORT"
@@ -1056,6 +1075,8 @@ fi
 ALLOW_FROM_RAW=$(normalize_csv_list "$ALLOW_FROM_RAW")
 GROUP_ALLOW_FROM_RAW=$(normalize_csv_list "$GROUP_ALLOW_FROM_RAW")
 ADMIN_SENDER_IDS_RAW=$(normalize_csv_list "$ADMIN_SENDER_IDS_RAW")
+
+normalize_public_base_inputs
 
 if [ -n "$BASE_URL" ] && [ -n "$API_KEY" ]; then
   CHANNEL_ENABLED="true"

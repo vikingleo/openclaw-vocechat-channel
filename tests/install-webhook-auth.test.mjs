@@ -7,9 +7,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const installScriptPath = fileURLToPath(new URL("../scripts/install.sh", import.meta.url));
+const doctorScriptPath = fileURLToPath(new URL("../scripts/doctor.sh", import.meta.url));
 const repoDir = fileURLToPath(new URL("../", import.meta.url));
 const installScript = readFileSync(installScriptPath, "utf8");
-const doctorScript = readFileSync(new URL("../scripts/doctor.sh", import.meta.url), "utf8");
+const doctorScript = readFileSync(doctorScriptPath, "utf8");
 
 function createFakeOpenClaw(tempDir) {
   const fakeOpenClaw = join(tempDir, "openclaw");
@@ -70,6 +71,39 @@ function runInstallerWithConfig(config, args = []) {
   }
 }
 
+function runDoctorWithConfig(config, args = []) {
+  const tempDir = mkdtempSync(join(tmpdir(), "openclaw-vocechat-doctor-test-"));
+  const configPath = join(tempDir, "openclaw.json");
+  const fakeOpenClaw = createFakeOpenClaw(tempDir);
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  try {
+    return execFileSync(
+      "sh",
+      [
+        doctorScriptPath,
+        "--config",
+        configPath,
+        "--server-install-dir",
+        join(tempDir, "server"),
+        "--server-service-scope",
+        "none",
+        ...args,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: tempDir,
+          OPENCLAW_BIN: fakeOpenClaw,
+        },
+      },
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 test("install script leaves VoceChat webhook auth disabled unless explicitly provided", () => {
   assert.doesNotMatch(
     installScript,
@@ -104,6 +138,31 @@ test("doctor accepts missing webhookApiKey for native VoceChat webhooks", () => 
     /VoceChat 入站已启用，但 webhookApiKey 缺失/,
     "doctor.sh must not warn when native VoceChat webhook auth is intentionally disabled.",
   );
+});
+
+test("doctor warns about path-only approval public base", () => {
+  const output = runDoctorWithConfig({
+    channels: {
+      vocechat: {
+        enabled: true,
+        baseUrl: "http://127.0.0.1:3000",
+        apiKey: "bot-api-key",
+        inboundEnabled: true,
+        webhookPath: "/vocechat/webhook",
+        defaultTo: "user:2",
+        management: {
+          adminSenderIds: ["telegram:123456789"],
+        },
+        approvals: {
+          enabled: true,
+          publicBaseUrl: "/vocechat/approval",
+          routePath: "/vocechat/approval",
+        },
+      },
+    },
+  });
+
+  assert.match(output, /approvals\.publicBaseUrl 不是 http\(s\) URL/);
 });
 
 test("install script removes stale webhookApiKey by default", () => {
@@ -187,4 +246,25 @@ test("install script fails early when config file is not writable", () => {
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("install script ignores inherited path-only approval public base", () => {
+  const result = runInstallerWithConfig({
+    channels: {
+      vocechat: {
+        enabled: true,
+        baseUrl: "http://127.0.0.1:3000",
+        apiKey: "old-bot-api-key",
+        approvals: {
+          enabled: true,
+          publicBaseUrl: "/vocechat/approval",
+          routePath: "/vocechat/approval",
+        },
+      },
+    },
+  });
+
+  assert.equal(result.config.channels.vocechat.approvals.publicBaseUrl, undefined);
+  assert.doesNotMatch(result.output, /\/vocechat\/approval\/vocechat\/approval/);
+  assert.match(result.output, /审批网页入口: 待补 OpenClaw 公网基础地址/);
 });
