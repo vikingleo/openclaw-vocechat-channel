@@ -87,6 +87,10 @@
 
 当前覆盖：入站接收确认、队列排队通知、空回复/失败兜底执行记录、审批请求/结果通知和非 Telegram 管理命令文本。聊天软件渠道不承载 OpenClaw 开发态输出流；工具开始、工具结果、命令输出、patch 摘要、计划更新、item 事件、partial reply、reasoning 状态和 block queued 等 dispatch 回调会被静默处理，最终模型回复仍通过普通回复消息发送。
 
+### 出站空文本保护
+
+出站消息会在插件的统一文本边界检查 Unicode 空白和 `Default_Ignorable_Code_Point` 字符。纯 `U+200B`（零宽空格）等不可见内容会被视为空消息，不会调用 VoceChat 发送接口；包含正常文字的消息保持原文，内部 emoji ZWJ 等合法字符不会被粗暴删除。
+
 ### 卡片管理
 
 1. 管理员在 Telegram 中发送 `/vocechatctl`。

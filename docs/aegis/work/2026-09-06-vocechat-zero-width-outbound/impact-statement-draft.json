@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [
+    "出站文本 canonical owner、VoceChat API 调用、测试与文档"
+  ],
+  "owners": [
+    "index.ts + src/vocechat-text.ts"
+  ],
+  "invariants": [
+    "纯不可见文本不调用 VoceChat 发送接口；含可见文本的消息仍可发送"
+  ],
+  "compatBoundary": "不改变 webhook 鉴权、白名单、目标解析和媒体上传契约",
+  "nonGoals": [
+    "不删除或改写所有消息中的零宽字符，不修复历史已发送消息"
+  ]
+}

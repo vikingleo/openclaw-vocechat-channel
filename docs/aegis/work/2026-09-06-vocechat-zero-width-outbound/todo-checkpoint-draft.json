@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-09-06-vocechat-zero-width-outbound",
+  "currentTodo": "完成测试、构建、活动插件检查和分支交付",
+  "completedTodos": [
+    "定位不可见消息所有出站入口",
+    "补充零宽文本回归测试",
+    "实现 canonical 出站过滤修复",
+    "运行测试构建与脚本校验",
+    "检查活动服务与分支状态"
+  ],
+  "activeSlice": "统一出站文本可见性判断",
+  "evidenceRefs": [],
+  "blockedOn": null,
+  "nextStep": "提交并推送 feat-group-reply-config",
+  "updatedAt": "2026-09-06"
+}

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "candidateDocs": [
+    "README.md 出站消息与运行事件说明"
+  ],
+  "whyRelevant": "README.md 记录插件出站发送和过程通知边界，本次修复位于该边界",
+  "missingAuthority": []
+}

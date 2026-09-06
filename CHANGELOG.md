@@ -18,6 +18,7 @@
 - 新增插件侧 VoceChat 入站执行队列与 `/queue/*` 控制接口，桌面端可直接读取远端机器人队列状态，不再依赖本机旧队列 token fallback
 - 为 VoceChat 过程类通知加入隐藏运行事件元数据注释，覆盖队列、审批、管理和执行记录类消息
 - 静默处理 OpenClaw dispatch 归一化回调，避免工具调用、命令输出、patch、计划、partial reply 和 reasoning 状态刷屏聊天渠道
+- 修复模型返回零宽空格（`U+200B`）时被当作普通文本发送，避免 VoceChat 客户端收到空消息
 
 ## 0.4.9 - 2026-03-14
 

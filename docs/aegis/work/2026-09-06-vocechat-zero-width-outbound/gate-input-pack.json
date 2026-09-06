@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "README.md 出站消息与运行事件说明"
+  ],
+  "impactStatement": "docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/impact-statement-draft.json",
+  "compatPlan": "不改变 webhook 鉴权、白名单、目标解析和媒体上传契约",
+  "retirementPlan": "old per-path trim checks now delegate to canonical helper",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/evidence-bundle-draft-npm-test-green.json",
+    "docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/evidence-bundle-draft-runtime-gateway-reload.json"
+  ]
+}

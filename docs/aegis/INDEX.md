@@ -69,3 +69,16 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/impact-statement-draft.json | VoceChat media failed repair impact statement draft |
 | 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/todo-checkpoint-draft.json | VoceChat media failed repair todo checkpoint draft |
 | 2026-07-01 | artifact | docs/aegis/work/2026-07-01-vocechat-media-failed/drift-check-draft.json | VoceChat media failed repair drift check draft |
+| 2026-09-06 | work | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/10-intent.md | VoceChat 零宽空消息修复 intent |
+| 2026-09-06 | work | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/20-checkpoint.md | VoceChat 零宽空消息修复 checkpoint |
+| 2026-09-06 | work | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/90-evidence.md | VoceChat 零宽空消息修复 evidence |
+| 2026-09-06 | work | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/99-reflection.md | VoceChat 零宽空消息修复 reflection |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/task-intent-draft.json | VoceChat 零宽空消息修复 task intent draft |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/baseline-read-set-hint.json | VoceChat 零宽空消息修复 baseline read-set hint |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/impact-statement-draft.json | VoceChat 零宽空消息修复 impact statement draft |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/todo-checkpoint-draft.json | VoceChat 零宽空消息修复 todo checkpoint draft |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/drift-check-draft.json | VoceChat 零宽空消息修复 drift check draft |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/evidence-bundle-draft-npm-test-green.json | 2026-09-06-vocechat-zero-width-outbound evidence npm-test-green |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/evidence-bundle-draft-runtime-gateway-reload.json | 2026-09-06-vocechat-zero-width-outbound evidence runtime-gateway-reload |
+| 2026-09-06 | artifact | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/gate-input-pack.json | 2026-09-06-vocechat-zero-width-outbound gate input pack |
+| 2026-09-06 | work | docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/proof-bundle.md | 2026-09-06-vocechat-zero-width-outbound proof bundle |

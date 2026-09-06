@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-09-06-vocechat-zero-width-outbound",
+  "taskIntentRef": "docs/aegis/work/2026-09-06-vocechat-zero-width-outbound/task-intent-draft.json",
+  "baselineRefs": [
+    "README.md 出站消息与运行事件说明"
+  ],
+  "scopeStatus": "aligned",
+  "compatStatus": "aligned",
+  "retirementStatus": "old per-path trim checks now delegate to canonical helper",
+  "newRiskSignals": [
+    "保留含可见文本的原始内容，避免破坏 emoji ZWJ 和变体选择符"
+  ],
+  "decision": "continue"
+}

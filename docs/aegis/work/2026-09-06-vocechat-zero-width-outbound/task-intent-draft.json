@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "阻止纯零宽和不可见模型输出被作为空消息发送到 VoceChat",
+  "scope": "插件出站文本归一化、普通文本/引用回复/媒体附言/队列通知入口及回归测试",
+  "changeKinds": [
+    "bugfix"
+  ],
+  "riskHints": [
+    "保留含可见文本的原始内容，避免破坏 emoji ZWJ 和变体选择符"
+  ]
+}

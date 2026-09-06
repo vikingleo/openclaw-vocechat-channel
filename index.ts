@@ -35,6 +35,7 @@ import { ControlPanelStore } from "./src/panel-store.js";
 import { createVoceChatDispatchRunEventBridge } from "./src/dispatch-run-events.js";
 import { buildVoceChatReplyOptions } from "./src/reply-options.js";
 import { buildVoceChatReplyMediaLocalRoots } from "./src/reply-media-context.js";
+import { normalizeVoceChatOutboundText } from "./src/vocechat-text.js";
 import { buildHiddenRunEventMarkdown, type VoceChatRunEventMeta } from "./src/run-event-meta.js";
 import { parseTelegramTarget, TelegramPanelDelivery, type TelegramInlineKeyboardButton } from "./src/telegram-panel-delivery.js";
 import {
@@ -3785,7 +3786,7 @@ function parseJsonObject(rawBody: string): Record<string, unknown> | null {
 }
 
 function normalizeMediaCaption(text: string, mediaUrl?: string): string {
-  const normalizedText = formatModelTagForVoceChat(text).trim();
+  const normalizedText = normalizeVoceChatOutboundText(formatModelTagForVoceChat(text));
   if (!normalizedText) return "";
 
   const normalizedMedia = normalizeString(mediaUrl);
@@ -4098,7 +4099,7 @@ function formatModelTagForVoceChat(text: string): string {
 }
 
 function buildPayloadText(text: string, mediaUrl?: string): string {
-  const normalizedText = formatModelTagForVoceChat(text);
+  const normalizedText = normalizeVoceChatOutboundText(formatModelTagForVoceChat(text));
   const normalizedMedia = normalizeString(mediaUrl);
   if (normalizedText && normalizedMedia) return `${normalizedText}\n\n${normalizedMedia}`;
   if (normalizedMedia) return normalizedMedia;
@@ -4119,7 +4120,7 @@ async function sendVoceChatFallbackNotice(params: {
   queueItem?: VoceChatQueueItem;
 }): Promise<void> {
   const queueItem = params.queueItem;
-  const text = normalizeString(params.text);
+  const text = normalizeVoceChatOutboundText(params.text);
   if (!text) return;
   const taggedText = withVoceChatRunEventMeta(text, {
     messageType: "execution_record",
@@ -4256,7 +4257,7 @@ async function sendVoceChatReplyToMessage(params: {
   const messageId = normalizeString(params.messageId);
   if (!messageId) throw new Error("[vocechat] reply target messageId is required.");
 
-  const text = formatModelTagForVoceChat(params.text);
+  const text = normalizeVoceChatOutboundText(formatModelTagForVoceChat(params.text));
   if (!text) throw new Error("[vocechat] Empty payload is not allowed.");
 
   const url = `${account.baseUrl}/api/bot/reply/${encodeURIComponent(messageId)}`;
@@ -4892,7 +4893,7 @@ async function sendVoceChatQueueNotice(params: {
     error?: (message: string) => void;
   };
 }): Promise<void> {
-  const text = normalizeString(params.text);
+  const text = normalizeVoceChatOutboundText(params.text);
   if (!text) return;
   try {
     await sendVoceChatMessage({
@@ -5535,7 +5536,7 @@ async function processInboundEvent(params: {
     }
 
     const mediaUrls = resolveOutboundMediaUrls(payload);
-    const text = normalizeString(payload.text);
+    const text = normalizeVoceChatOutboundText(payload.text);
 
     if (mediaUrls.length > 0) {
       for (let index = 0; index < mediaUrls.length; index += 1) {

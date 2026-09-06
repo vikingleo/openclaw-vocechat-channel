@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "runtime-gateway-reload",
+  "type": "runtime",
+  "source": "systemctl --user restart openclaw-gateway.service; openclaw plugins info vocechat; journalctl --user -u openclaw-gateway.service",
+  "summary": "gateway active；VoceChat 插件从仓库 dist/index.js 加载；webhook 路由、队列路由和 approval route 注册成功，gateway ready。",
+  "verifier": "Codex CLI"
+}
